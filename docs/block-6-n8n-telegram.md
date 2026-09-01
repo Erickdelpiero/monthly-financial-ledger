@@ -216,13 +216,22 @@ Rollback: `docker network disconnect ledger-net gonex-n8n && docker network rm l
 
 ### Step 2 — project DB + least-privilege role in gonex-postgres
 
+`money_ledger_app` is **runtime-only** and must never own anything — it stays
+exactly the role `production_grants.sql` grants column-scoped access to. The
+schema (tables, types, trigger functions) is owned by `<admin>`, the same
+Postgres admin role used throughout this runbook. This is what makes
+`production_grants.sql`'s `REVOKE ALL FROM money_ledger_app` actually mean
+something: an *owner*'s privileges are implicit and immune to `REVOKE`, so if
+`money_ledger_app` owned the tables the grants script would be a no-op.
+
 As a Postgres admin **inside psql** (`\du` etc. only work inside psql or via
 `psql ... -c '\du'`):
 
 ```
 psql -h <admin-host> -U <admin> -c "CREATE ROLE money_ledger_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '  <strong-pw>'"
-psql -h <admin-host> -U <admin> -c "CREATE DATABASE personal_finance_bot OWNER money_ledger_app"
+psql -h <admin-host> -U <admin> -c "CREATE DATABASE personal_finance_bot OWNER <admin>"
 ```
+Note the `OWNER <admin>` — **not** `money_ledger_app` (that was the bug).
 Record `<strong-pw>` privately. Rollback:
 `DROP DATABASE personal_finance_bot; DROP ROLE money_ledger_app;`.
 
@@ -233,10 +242,11 @@ From the repo on the VPS (or push the image):
 ```
 docker build -t money-ledger:interim .
 
-# run the migration once
+# run the migration once, AS THE ADMIN/OWNER — never as money_ledger_app.
+# Anything alembic creates is owned by whoever DB_USER is here.
 docker run --rm --network docker_gonex-network \
   -e DB_HOST=gonex-postgres -e DB_PORT=5432 -e DB_NAME=personal_finance_bot \
-  -e DB_USER=money_ledger_app -e DB_PASSWORD="  <strong-pw>" \
+  -e DB_USER=<admin> -e DB_PASSWORD="  <admin-pw>" \
   money-ledger:interim alembic upgrade head
 
 # apply the column-scoped production grants (as the schema owner / admin)
@@ -244,6 +254,7 @@ psql -h <admin-host> -U <admin> -d personal_finance_bot \
   -v app_role=money_ledger_app -f scripts/production_grants.sql
 
 # start the API on both networks: ledger-net (for n8n) + docker_gonex-network (for the DB)
+# — this one still runs as money_ledger_app, the least-privilege runtime role
 docker run -d --name ledger-api --restart unless-stopped \
   --network ledger-net \
   -e DB_HOST=gonex-postgres -e DB_PORT=5432 -e DB_NAME=personal_finance_bot \
@@ -252,11 +263,73 @@ docker run -d --name ledger-api --restart unless-stopped \
   money-ledger:interim
 docker network connect docker_gonex-network ledger-api
 ```
-Record `<api-token>` privately (a fresh strong value; NOT the DB password).
-Rollback: `docker rm -f ledger-api`.
+Record `<admin-pw>` and `<api-token>` privately (`<api-token>` is a fresh
+strong value; NOT the DB password). Rollback: `docker rm -f ledger-api`.
 
 Verify: `docker exec gonex-n8n sh -c 'wget -qO- http://ledger-api:8000/api/v1/health'`
 → `{"status":"ok"}`.
+
+Any **future** migration (Block 8+ or a manual `alembic upgrade`) must also
+run with `DB_USER=<admin>`. Running it as `money_ledger_app` even once makes
+that role the owner of whatever it creates that turn, and `production_grants.sql`
+would need to be re-applied *and* ownership fixed again (see below) for that
+object.
+
+#### If Step 3 already ran as `money_ledger_app` on the VPS (fix in place, no re-create)
+
+This is the case if you ran the migration before this fix landed: `person`,
+`transaction`, `alembic_version`, the two `event_type`/`transaction_status`
+enum types, and the two `0002` trigger functions are all currently owned by
+`money_ledger_app`, which means it has full implicit DML/DDL on them
+regardless of what `production_grants.sql` granted or revoked. Fix ownership
+in place — do **not** drop and recreate the database:
+
+```
+# 1. let <admin> reassign money_ledger_app's objects (skip if <admin> is a
+#    Postgres superuser — then it can already do this)
+psql -h <admin-host> -U <admin> -d personal_finance_bot -c "GRANT money_ledger_app TO <admin>;"
+
+# 2. move ownership of every object money_ledger_app owns in this DB to <admin>
+psql -h <admin-host> -U <admin> -d personal_finance_bot -c "REASSIGN OWNED BY money_ledger_app TO <admin>;"
+
+# 3. move ownership of the database itself (connect to a different DB to do it)
+psql -h <admin-host> -U <admin> -d postgres -c "ALTER DATABASE personal_finance_bot OWNER TO <admin>;"
+
+# 4. drop the temporary membership from step 1 (hygiene — <admin> should not
+#    stay a member of the runtime role)
+psql -h <admin-host> -U <admin> -d personal_finance_bot -c "REVOKE money_ledger_app FROM <admin>;"
+
+# 5. re-apply the column-scoped grants — now that money_ledger_app is no
+#    longer owner, these are the *only* privileges it has
+psql -h <admin-host> -U <admin> -d personal_finance_bot \
+  -v app_role=money_ledger_app -f scripts/production_grants.sql
+```
+(If `<admin>` has upper-case letters or special characters, quote it as
+`"<admin>"` in the SQL above — a shell placeholder is not automatically a
+valid bare SQL identifier.)
+
+Verify ownership moved:
+```
+psql -h <admin-host> -U <admin> -d personal_finance_bot -c "\dt"
+```
+`Owner` for `person` / `transaction` / `alembic_version` must now read
+`<admin>`, not `money_ledger_app`.
+
+Verify the restriction now actually holds (this must fail):
+```
+psql -h <admin-host> -U money_ledger_app -d personal_finance_bot -c \
+  "INSERT INTO person (id, telegram_user_id, name) VALUES (gen_random_uuid(), 'x', 'x');"
+```
+Expect `ERROR: permission denied for table person`. Nothing to clean up if it
+fails as expected — no row was written.
+
+No need to restart `ledger-api` if it's already running against this DB —
+`REASSIGN OWNED` changes ownership/ACLs only, not data or connections, and its
+own SELECT/INSERT/UPDATE on `transaction` were already covered by the
+explicit grants either way.
+
+Rollback (only meaningful *before* Step 7 — this re-opens the gap the fix
+just closed): `psql ... -c "REASSIGN OWNED BY <admin> TO money_ledger_app;"`.
 
 ### Step 4 — n8n credentials
 
@@ -297,14 +370,20 @@ Record the two `id` values.
 
 ### Step 7 — seed exactly two Person rows
 
+Run this as the **Postgres admin / schema owner** (the `<admin>` from Step 2),
+**not** as `money_ledger_app`. After `production_grants.sql` (Step 3) the app
+role has `SELECT` only on `person` — the runtime never inserts people
+(F3 / PHASE-2.11 §4.1) — so an `INSERT` as `money_ledger_app` fails with a
+permission error.
+
 ```
-psql -h <host> -U money_ledger_app -d personal_finance_bot -c \
+psql -h <admin-host> -U <admin> -d personal_finance_bot -c \
 "INSERT INTO person (id, telegram_user_id, name) VALUES
    (gen_random_uuid(), '<erick_id>', 'Erick'),
    (gen_random_uuid(), '<mama_id>',  'Mamá');"
 ```
-Rollback: `UPDATE person SET is_active = false;` (never `DELETE` — keep it as
-data).
+Rollback (same admin / owner role — the app role has no `UPDATE` on `person`):
+`UPDATE person SET is_active = false;` (never `DELETE` — keep it as data).
 
 ### Step 8 — activate & set the webhook (the one real production change)
 
@@ -337,9 +416,10 @@ Report the results; that closes Block 6.
 |---|---|---|
 | Create `@CuentasDN_bot` (BotFather) | done | BotFather → `/deletebot` |
 | `docker network create ledger-net` + connect n8n | step 1 | disconnect + `network rm` |
-| DB `personal_finance_bot` + role `money_ledger_app` | step 2 | `DROP DATABASE` / `DROP ROLE` |
-| `alembic upgrade head` (additive `0001`+`0002`) | step 3 | `alembic downgrade base` (no data yet) |
+| DB `personal_finance_bot` (owner `<admin>`) + role `money_ledger_app` | step 2 | `DROP DATABASE` / `DROP ROLE` |
+| `alembic upgrade head` (additive `0001`+`0002`), run as `<admin>` | step 3 | `alembic downgrade base` (no data yet) |
 | `production_grants.sql` | step 3 | `REVOKE` / re-`GRANT ALL` to the role |
+| *(if applicable)* `REASSIGN OWNED BY money_ledger_app TO <admin>` + `ALTER DATABASE ... OWNER TO <admin>` (remediation for a Step 3 already run as `money_ledger_app`) | step 3 remediation | `REASSIGN OWNED BY <admin> TO money_ledger_app` (only before step 7) |
 | `ledger-api` container | step 3 | `docker rm -f ledger-api` |
 | n8n credentials | step 4 | delete credentials |
 | Workflows A/B (inactive) | step 5 | delete workflows |

@@ -458,3 +458,19 @@ service layer; `tests/test_api_list_transactions.py` (9 tests).
 - Redis auth on `gonex-redis` (runbook step 0).
 - Everything in `docs/block-6-n8n-telegram.md` Part 5 (the manual runbook Erick
   executes) — nothing is applied until that + the design are reviewed.
+
+### B6-4 — fix: DB URL no longer passes through Alembic's configparser
+
+Reported from the VPS: `alembic upgrade head` raised
+`ValueError: invalid interpolation syntax` because a random password contained
+`%` (and C5-1's `URL.create().render_as_string()` percent-encodes reserved
+chars). `migrations/env.py` used `config.set_main_option("sqlalchemy.url", …)`,
+which stores the value in Alembic's `ConfigParser` (`BasicInterpolation` treats
+`%` as a sigil). Fixed: the URL is passed via `config.attributes["db_url"]` (a
+plain dict) or `get_database_url()`, and the online path uses
+`create_engine(url, poolclass=NullPool)` directly instead of
+`engine_from_config(config.get_section(...))`. `tests/conftest.py` passes the
+URL the same way. Regression:
+`tests/test_migrations.py::test_upgrade_tolerates_percent_in_the_db_url`.
+Confirmed: CLI `alembic upgrade head` with a `%`-laden `DATABASE_URL` reaches
+`0002 (head)`.

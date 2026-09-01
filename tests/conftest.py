@@ -43,7 +43,9 @@ def _require_test_database_url() -> str:
 def _make_alembic_config(url: str) -> Config:
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", url)
+    # Passed via attributes (a plain dict), not set_main_option — the latter
+    # goes through configparser interpolation and breaks on a '%' in the URL.
+    cfg.attributes["db_url"] = url
     return cfg
 
 

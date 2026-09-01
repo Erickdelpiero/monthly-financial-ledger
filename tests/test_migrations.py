@@ -6,13 +6,16 @@ trip, single linear head, and that the resulting schema matches the models.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, make_url, text
 from sqlalchemy.engine import Engine
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CORE_TABLES = {"person", "transaction"}
 
 EXPECTED_TRANSACTION_COLUMNS = {
@@ -108,6 +111,30 @@ def test_downgrade_removes_tables_types_and_guards(
     assert not (CORE_TABLES & remaining)
     assert _enum_types_present(engine) == set()
     assert _append_only_functions_present(engine) == set()
+
+
+def test_upgrade_tolerates_percent_in_the_db_url(
+    alembic_config: Config, engine: Engine, database_url: str
+) -> None:
+    """Regression: a random password can contain '%', and URL.create
+    percent-encodes reserved characters. The URL must not go through
+    configparser interpolation (env.py used to `set_main_option` it, which
+    raised `ValueError: invalid interpolation syntax`).
+    """
+    percent_url = (
+        make_url(database_url)
+        .set(password="pa%ss%2Fword%wild")
+        .render_as_string(hide_password=False)
+    )
+    assert "%" in percent_url
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["db_url"] = percent_url
+
+    command.downgrade(alembic_config, "base")
+    command.upgrade(cfg, "head")  # must not raise ValueError
+    assert CORE_TABLES <= set(inspect(engine).get_table_names())
 
 
 def test_downgrade_one_step_keeps_the_schema(

@@ -406,6 +406,12 @@ Rollback: deactivate workflow A, then
 - Mamá tries `/corregir` on Erick's row → she does not see it in the picker;
   a direct API call would get `403 CORRECTION_NOT_ALLOWED`.
 
+The ledger is append-only, so this `S/ 12.00` test entry cannot be deleted. To
+bring the real balance back to zero before first real use, register the
+offsetting movement from the bot (e.g. Mamá: *"Mamá me entregó dinero"* /
+`mama_entrega_dinero` `S/ 12.00`) so the two net out. Note both the test
+`erick_gasta_para_mama` row and this offset in the block close-out entry.
+
 Report the results; that closes Block 6.
 
 ---
@@ -432,8 +438,14 @@ Nothing here is applied until this register and Parts 2–5 are reviewed.
 
 ## Part 7 — still open
 
-- **Redis auth** (runbook step 0 result).
-- Exact final button/template wording (decided while building the workflows;
-  semantics are locked by PHASE-2.10).
+- **Redis auth** — record the runbook step 0 result (`PONG` vs `NOAUTH`) here
+  and, if auth is on, that the n8n Redis credential was created with the
+  password. Needed to call Block 6 closed.
+- **The three `TODO (Step 8)` constants** (`AUTHORIZED_IDS` + the two `OTHER`
+  maps) are entered **in the n8n UI on the VPS only**, never committed — the
+  two `telegram_user_id` are real personal ids in a public repo
+  (`.ai/decisions.md`). The repo JSON keeps the placeholders. See `n8n/README.md`.
+- ~~Exact final button/template wording~~ — resolved: the fixed templates live
+  in `n8n/workflow-*.json`; semantics are locked by PHASE-2.10.
 - Whether the interim `ledger-api` from step 3 is kept until Block 8 or Block 8
-  redeploys from scratch — Erick's call during Block 8.
+  redeploys from scratch — Erick's call during Block 8 (not a Block 6 blocker).

@@ -43,10 +43,17 @@ Trigger` on `@CuentasDN_bot` would fight over it. So:
 
 ## Fill in the three project-specific values (search for `TODO (Step 8)`)
 
+> **Edit these in the n8n UI on the VPS only — never in this repo.** The two
+> `telegram_user_id` are real personal identifiers and this is a public repo
+> (`.ai/decisions.md` → "no real Telegram ids in Git"). The committed JSON
+> keeps the `TODO (Step 8)` placeholders; the real values live only in the
+> imported workflows on the VPS. If you ever re-export the workflows for the
+> repo, blank these three constants back to `[]` / `{}` first.
+
 | Where | Constant | Value |
 |---|---|---|
 | A → `Parse update` (Code) | `AUTHORIZED_IDS` | `[<erick_id>, <mama_id>]` — the two `telegram_user_id` as **numbers** (from runbook Step 6). Empty = nobody allowed. |
-| A → `Handle API` (Code) | `OTHER` | `{ "<erick_id>": "<mama_id>", "<mama_id>": "<erick_id>" }` — maps a sender to the other person's chat id (for a bot, chat id == user id). |
+| A → `Handle API` (Code) | `OTHER` | `{ "<erick_id>": "<mama_id>", "<mama_id>": "<erick_id>" }` — maps a sender to the other person's chat id (for a bot, chat id == user id), keys as **strings**. |
 | B → `Handle corr` (Code) | `OTHER` | same map as above. |
 
 If `AUTHORIZED_IDS` is left empty the bot will only ever reply "Este bot es

@@ -1,0 +1,29 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# not needed at runtime
+tests
+architecture
+docs
+scripts
+*.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+requirements-dev.txt
+
+# never ship secrets or local data
+.env
+.env.*
+!.env.example
+*.sql
+!scripts/*.sql

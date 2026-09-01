@@ -1,0 +1,29 @@
+# --- secrets / local config (never commit; PHASE-2.2 §12, PHASE-2.11 §3) ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- runtime / infra ---
+n8n_data/
+*.log
+
+# --- real financial data & generated artifacts must never enter Git ---
+# (PHASE-2.3 §23, PHASE-2.4 §19, PHASE-2.6 §25)
+/data/
+/outputs/
+*.dump
+*.sql
+*.sql.gz
+!scripts/*.sql

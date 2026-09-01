@@ -1,0 +1,10 @@
+# Runtime dependencies only (PHASE-2.7 §13, PHASE-2.9 §14.1 — minimal image).
+# Test/dev tools live in requirements-dev.txt.
+# PostgreSQL only. No SQLite (architecture PHASE-2.1 / 2.6 / 2.7).
+
+SQLAlchemy>=2.0.30,<2.1
+alembic>=1.13,<2.0
+psycopg[binary]>=3.1,<4.0
+python-dotenv>=1.0,<2.0
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.27,<1.0

@@ -1,0 +1,368 @@
+{
+  "name": "Ledger B - Correccion (sub-workflow de A)",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "meta": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "b1",
+      "name": "Inicio (desde A)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "b2",
+      "name": "Cargar estado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [220, 300],
+      "parameters": {
+        "operation": "get",
+        "propertyName": "stateRaw",
+        "key": "=mlbot:conv:{{ $json.chatId }}",
+        "keyType": "string",
+        "options": {}
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b3",
+      "name": "Correccion SM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "jsCode": "const j = $input.first().json;\nlet state = {};\ntry { state = j.stateRaw ? JSON.parse(j.stateRaw) : {}; } catch (e) {}\nconst step = state.step || 'IDLE';\nconst cb = j.callbackData || '';\n\nconst LABELS = {\n  mama_entrega_dinero: 'Mama me entrego dinero',\n  erick_gasta_para_mama: 'Yo gaste para mama',\n  erick_entrega_dinero: 'Yo le entregue dinero',\n  mama_devuelve: 'Mama me devolvio dinero',\n  erick_devuelve: 'Yo le devolvi dinero'\n};\nfunction kb(rows){return {rows: rows.map(r => ({row:{buttons: r.map(b => ({button:{text:b.t, additionalFields:{callback_data:b.d}}}))}}))};}\nconst K_EVENT = kb(Object.keys(LABELS).map(k => [{t: LABELS[k], d: 'evt:'+k}]));\nconst K_SCOPE = kb([[{t:'El tipo',d:'corr:scope:tipo'},{t:'El monto/descripcion',d:'corr:scope:md'}],[{t:'La fecha',d:'corr:scope:fecha'},{t:'Todo',d:'corr:scope:todo'}],[{t:'Cancelar',d:'cancel'}]]);\nconst K_DATE  = kb([[{t:'Hoy',d:'date:hoy'},{t:'Ayer',d:'date:ayer'}],[{t:'Otra fecha',d:'date:otra'},{t:'Cancelar',d:'cancel'}]]);\nconst K_CONF  = kb([[{t:'CONFIRMAR',d:'confirm'},{t:'CANCELAR',d:'cancel'}]]);\n\nfunction limaISO(off){\n  const p = new Intl.DateTimeFormat('en-CA',{timeZone:'America/Lima',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());\n  const d = new Date(p + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + (off||0));\n  return d.toISOString().slice(0,10);\n}\nfunction out(o){ return [{ json: Object.assign({ chatId: j.chatId, leg:0, replyText:'', n8nKeyboard:null, redisAction:'keep', stateNext:null, apiBody:null, apiTargetId:null }, o) }]; }\n\nif (j.isCallback && cb === 'cancel')\n  return out({ leg:0, redisAction:'del', replyText:'Correccion cancelada.' });\n\nif (step === 'PROCESSING_CORRECTION')\n  return out({ leg:4 });\n\n// fresh /corregir, or forwarded from A after 'Cancelar y corregir' -> fetch the list (leg 2)\nif (j.forceCorrection || step === 'IDLE' || (!j.isCallback && j.text === '/corregir'))\n  return out({ leg:2 });\n\nif (step === 'WAITING_CORRECTION_SELECTION') {\n  if (j.isCallback && cb.indexOf('corr:pick:') === 0) {\n    const idx = parseInt(cb.split(':')[2], 10);\n    const target = (state.list || [])[idx];\n    if (!target) return out({ leg:0, redisAction:'del', replyText:'Seleccion invalida. Envia /corregir de nuevo.' });\n    return out({ leg:1, redisAction:'set',\n      stateNext: Object.assign({}, state, { step:'WAITING_CORRECTION_SCOPE', target }),\n      replyText: 'Vas a corregir:\\n' + target.event_date + ' - S/ ' + target.amount + ' - ' + target.description + '\\n\\nQue deseas corregir?',\n      n8nKeyboard: K_SCOPE });\n  }\n  return out({ leg:0, replyText:'Elige un registro de la lista, o envia /corregir de nuevo.' });\n}\n\nif (step === 'WAITING_CORRECTION_SCOPE' && j.isCallback && cb.indexOf('corr:scope:') === 0) {\n  const scope = cb.split(':')[2];\n  const base = Object.assign({}, state, { scope });\n  if (scope === 'tipo' || scope === 'todo')\n    return out({ leg:1, redisAction:'set', stateNext: Object.assign({}, base, { step:'WAITING_CORRECTION_EVENT_TYPE' }),\n      replyText:'Nuevo tipo de operacion:', n8nKeyboard: K_EVENT });\n  if (scope === 'md')\n    return out({ leg:0, redisAction:'set', stateNext: Object.assign({}, base, { step:'WAITING_CORRECTION_TEXT' }),\n      replyText:'Escribe el nuevo monto y descripcion. Ej:  S/ 40.00 taxi' });\n  if (scope === 'fecha')\n    return out({ leg:1, redisAction:'set', stateNext: Object.assign({}, base, { step:'WAITING_CORRECTION_DATE' }),\n      replyText:'Nueva fecha:', n8nKeyboard: K_DATE });\n}\n\nfunction toConfirm(st){\n  const key = 'telegram:' + j.chatId + ':update:' + j.updateId;\n  const t = st.target || {};\n  const evtAfter  = st.new_event_type || t.event_type;\n  const dateAfter = st.new_event_date || t.event_date;\n  const before = (LABELS[t.event_type] || t.event_type) + ' - S/ ' + t.amount + ' - ' + t.description + ' - ' + t.event_date;\n  let after;\n  if (st.new_raw_text) {\n    // amount + description are only known after the API parses the text, so do\n    // NOT show the old amount as if it were final.\n    after = (LABELS[evtAfter] || evtAfter) + ' - [monto y descripcion a interpretar de: \"' + st.new_raw_text + '\"] - ' + dateAfter;\n  } else {\n    after = (LABELS[evtAfter] || evtAfter) + ' - S/ ' + t.amount + ' - ' + t.description + ' - ' + dateAfter;\n  }\n  const txt = 'Revisa la correccion:\\n\\nAntes:\\n' + before + '\\n\\nDespues:\\n' + after + '\\n\\nConfirmas?';\n  return out({ leg:1, redisAction:'set',\n    stateNext: Object.assign({}, st, { step:'WAITING_CORRECTION_CONFIRMATION', pending_idempotency_key: st.pending_idempotency_key || key }),\n    replyText: txt, n8nKeyboard: K_CONF });\n}\n\nif (step === 'WAITING_CORRECTION_EVENT_TYPE' && j.isCallback && cb.indexOf('evt:') === 0) {\n  const st = Object.assign({}, state, { new_event_type: cb.slice(4) });\n  if (st.scope === 'todo')\n    return out({ leg:0, redisAction:'set', stateNext: Object.assign({}, st, { step:'WAITING_CORRECTION_TEXT' }),\n      replyText:'Escribe el nuevo monto y descripcion. Ej:  S/ 40.00 taxi' });\n  return toConfirm(st);\n}\n\nif (step === 'WAITING_CORRECTION_TEXT' && !j.isCallback && j.text) {\n  const st = Object.assign({}, state, { new_raw_text: j.text });\n  if (st.scope === 'todo')\n    return out({ leg:1, redisAction:'set', stateNext: Object.assign({}, st, { step:'WAITING_CORRECTION_DATE' }),\n      replyText:'Nueva fecha:', n8nKeyboard: K_DATE });\n  return toConfirm(st);\n}\n\nif (step === 'WAITING_CORRECTION_DATE') {\n  let dateISO = null;\n  if (j.isCallback && cb === 'date:hoy') dateISO = limaISO(0);\n  else if (j.isCallback && cb === 'date:ayer') dateISO = limaISO(-1);\n  else if (j.isCallback && cb === 'date:otra')\n    return out({ leg:0, redisAction:'set', stateNext: Object.assign({}, state, { step:'WAITING_CORRECTION_DATE_MANUAL' }),\n      replyText:'Escribe la fecha como AAAA-MM-DD.' });\n  else return out({ leg:1, replyText:'Elige una fecha.', n8nKeyboard: K_DATE });\n  return toConfirm(Object.assign({}, state, { new_event_date: dateISO }));\n}\n\nif (step === 'WAITING_CORRECTION_DATE_MANUAL' && !j.isCallback && /^\\d{4}-\\d{2}-\\d{2}$/.test(j.text))\n  return toConfirm(Object.assign({}, state, { new_event_date: j.text }));\n\nif (step === 'WAITING_CORRECTION_CONFIRMATION' && j.isCallback && (cb === 'confirm' || cb === 'retry')) {\n  const st = state;\n  const key = st.pending_idempotency_key || ('telegram:' + j.chatId + ':update:' + j.updateId);\n  const body = { telegram_user_id: String(j.fromId), idempotency_key: key };\n  if (st.new_event_type) body.event_type = st.new_event_type;\n  if (st.new_event_date) body.event_date = st.new_event_date;\n  if (st.new_raw_text) body.raw_text = st.new_raw_text;\n  return out({ leg:3, redisAction:'set',\n    stateNext: Object.assign({}, st, { step:'PROCESSING_CORRECTION', pending_idempotency_key: key }),\n    apiTargetId: (st.target || {}).id, apiBody: body });\n}\n\nreturn out({ leg:0, redisAction:'del', replyText:'No entendi. Envia /corregir para empezar de nuevo.' });"
+      }
+    },
+    {
+      "id": "b4",
+      "name": "Estado B",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 300],
+      "parameters": { "mode": "expression", "numberOutputs": 3, "output": "={{ ({set:0,del:1,keep:2})[$json.redisAction] }}" }
+    },
+    {
+      "id": "b5",
+      "name": "Redis: guardar B",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [880, 200],
+      "parameters": {
+        "operation": "set",
+        "key": "=mlbot:conv:{{ $('Correccion SM').item.json.chatId }}",
+        "value": "={{ JSON.stringify($('Correccion SM').item.json.stateNext) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 1800
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b6",
+      "name": "Redis: borrar B",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [880, 340],
+      "parameters": {
+        "operation": "delete",
+        "key": "=mlbot:conv:{{ $('Correccion SM').item.json.chatId }}"
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b7",
+      "name": "Route SM B",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1100, 300],
+      "parameters": { "mode": "expression", "numberOutputs": 5, "output": "={{ $('Correccion SM').item.json.leg }}" }
+    },
+    {
+      "id": "b8",
+      "name": "TG: texto B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1320, 120],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Correccion SM').item.json.chatId }}",
+        "text": "={{ $('Correccion SM').item.json.replyText }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b9",
+      "name": "TG: botones B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1320, 260],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Correccion SM').item.json.chatId }}",
+        "text": "={{ $('Correccion SM').item.json.replyText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": "={{ $('Correccion SM').item.json.n8nKeyboard }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b10",
+      "name": "GET /transactions B",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 400],
+      "parameters": {
+        "method": "GET",
+        "url": "http://ledger-api:8000/api/v1/transactions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "telegram_user_id", "value": "={{ $('Correccion SM').item.json.chatId }}" },
+            { "name": "status", "value": "active" },
+            { "name": "limit", "value": "5" }
+          ]
+        },
+        "options": { "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "credentials": { "httpHeaderAuth": { "name": "Header Auth account-CuentasDN" } }
+    },
+    {
+      "id": "b11",
+      "name": "Construir picker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 400],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst body = r.body || r;\nconst chatId = $('Correccion SM').item.json.chatId;\nconst rows = (body.transactions || []).map((t) => ({ id: t.id, event_type: t.event_type, amount: t.amount, description: t.description, event_date: t.event_date }));\n\nif (rows.length === 0) {\n  return [{ json: { chatId, leg:0, redisAction:'del', replyText:'No tienes registros para corregir.', n8nKeyboard:null, stateNext:null } }];\n}\n\nconst btns = rows.map((t, i) => ([{ text: (i+1) + '. ' + t.event_date + ' - S/ ' + t.amount + ' - ' + t.description, callback_data: 'corr:pick:' + i }]));\nbtns.push([{ text: 'Cancelar', callback_data: 'cancel' }]);\nconst n8nKeyboard = { rows: btns.map(row => ({ row: { buttons: row.map(b => ({ button: { text: b.text, additionalFields: { callback_data: b.callback_data } } })) } })) };\n\nreturn [{ json: {\n  chatId, leg:1, redisAction:'set',\n  stateNext: { step:'WAITING_CORRECTION_SELECTION', list: rows },\n  replyText: 'Estos son tus ultimos registros. Cual deseas corregir?',\n  n8nKeyboard\n}}];"
+      }
+    },
+    {
+      "id": "b12",
+      "name": "Redis: guardar picker",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1760, 400],
+      "parameters": {
+        "operation": "set",
+        "key": "=mlbot:conv:{{ $('Construir picker').item.json.chatId }}",
+        "value": "={{ JSON.stringify($('Construir picker').item.json.stateNext) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 1800
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b13",
+      "name": "TG: picker B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1980, 400],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Construir picker').item.json.chatId }}",
+        "text": "={{ $('Construir picker').item.json.replyText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": "={{ $('Construir picker').item.json.n8nKeyboard }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b14",
+      "name": "POST /corrections B",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 560],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://ledger-api:8000/api/v1/transactions/{{ $('Correccion SM').item.json.apiTargetId }}/corrections",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Correccion SM').item.json.apiBody) }}",
+        "options": { "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "credentials": { "httpHeaderAuth": { "name": "Header Auth account-CuentasDN" } }
+    },
+    {
+      "id": "b15",
+      "name": "Handle corr",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 560],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst status = r.statusCode || (r.body ? 200 : 0);\nconst body = r.body || r;\nconst chatId = $('Correccion SM').item.json.chatId;\nconst fromId = String($('Inicio (desde A)').item.json.fromId);\nconst smState = $('Correccion SM').item.json.stateNext || {};\n\n// TODO (Step 8): map each telegram_user_id -> the OTHER person's chat id.\nconst OTHER = {};   // e.g. { \"111\": \"222\", \"222\": \"111\" }\n\nif (status >= 200 && status < 300) {\n  const c = body.correction || {};\n  const b = body.balance || {};\n  const dir = b.direction === 'erick_owes_mama' ? 'Erick le debe a Mama'\n           : b.direction === 'mama_owes_erick' ? 'Mama le debe a Erick'\n           : 'No hay deuda pendiente';\n  return [{ json: {\n    ok: true, chatId,\n    replyText: 'Correccion aplicada\\n\\n' + c.description + '  -  S/ ' + c.amount + '\\n\\nSaldo actualizado:\\n' + dir + ': S/ ' + b.balance,\n    notifyChatId: OTHER[fromId] || null,\n    notifyText: 'La otra persona corrigio un registro. El saldo se actualizo.',\n    revertState: null\n  }}];\n}\n\nconst code = (body.error && body.error.code) || 'INTERNAL_ERROR';\nconst MSG = {\n  CORRECTION_NOT_ALLOWED: 'Solo puedes corregir tus propios registros.',\n  TRANSACTION_NOT_FOUND: 'No encontre ese registro.',\n  TRANSACTION_NOT_ACTIVE: 'Ese registro ya fue corregido antes. Envia /corregir para ver el actual.',\n  PARSER_FAILED: 'No entendi el monto. Escribe algo como:  S/ 40.00 taxi',\n  INVALID_AMOUNT: 'El monto no es valido (positivo, maximo 2 decimales).',\n  INVALID_EVENT_DATE: 'La fecha no es valida o esta en el futuro.'\n};\nreturn [{ json: {\n  ok: false, chatId, notifyChatId: null,\n  replyText: MSG[code] || 'Hubo un problema. Intenta de nuevo en un momento.',\n  revertState: Object.assign({}, smState, { step: 'WAITING_CORRECTION_CONFIRMATION' })\n}}];"
+      }
+    },
+    {
+      "id": "b16",
+      "name": "Route corr",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1760, 560],
+      "parameters": { "mode": "expression", "numberOutputs": 2, "output": "={{ $json.ok ? 0 : 1 }}" }
+    },
+    {
+      "id": "b17",
+      "name": "Redis: borrar (ok) B",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1980, 480],
+      "parameters": {
+        "operation": "delete",
+        "key": "=mlbot:conv:{{ $('Correccion SM').item.json.chatId }}"
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b18",
+      "name": "TG: ok B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2200, 480],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Handle corr').item.json.chatId }}",
+        "text": "={{ $('Handle corr').item.json.replyText }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b19",
+      "name": "IF: notificar B",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2420, 480],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $('Handle corr').item.json.notifyChatId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b20",
+      "name": "TG: notificar B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2640, 420],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Handle corr').item.json.notifyChatId }}",
+        "text": "={{ $('Handle corr').item.json.notifyText }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b23",
+      "name": "Redis: revertir (err) B",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1980, 640],
+      "parameters": {
+        "operation": "set",
+        "key": "=mlbot:conv:{{ $('Correccion SM').item.json.chatId }}",
+        "value": "={{ JSON.stringify($('Handle corr').item.json.revertState) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 1800
+      },
+      "credentials": { "redis": { "name": "Redis-CuentasDN" } }
+    },
+    {
+      "id": "b21",
+      "name": "TG: err B",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2200, 640],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Handle corr').item.json.chatId }}",
+        "text": "={{ $('Handle corr').item.json.replyText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": "={{ ({ rows: [ { row: { buttons: [ { button: { text: 'REINTENTAR', additionalFields: { callback_data: 'retry' } } }, { button: { text: 'CANCELAR', additionalFields: { callback_data: 'cancel' } } } ] } } ] }) }}",
+        "additionalFields": {}
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "b22",
+      "name": "NoOp B",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1320, 720],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Inicio (desde A)": { "main": [[{ "node": "Cargar estado", "type": "main", "index": 0 }]] },
+    "Cargar estado": { "main": [[{ "node": "Correccion SM", "type": "main", "index": 0 }]] },
+    "Correccion SM": { "main": [[{ "node": "Estado B", "type": "main", "index": 0 }]] },
+    "Estado B": {
+      "main": [
+        [{ "node": "Redis: guardar B", "type": "main", "index": 0 }],
+        [{ "node": "Redis: borrar B", "type": "main", "index": 0 }],
+        [{ "node": "Route SM B", "type": "main", "index": 0 }]
+      ]
+    },
+    "Redis: guardar B": { "main": [[{ "node": "Route SM B", "type": "main", "index": 0 }]] },
+    "Redis: borrar B": { "main": [[{ "node": "Route SM B", "type": "main", "index": 0 }]] },
+    "Route SM B": {
+      "main": [
+        [{ "node": "TG: texto B", "type": "main", "index": 0 }],
+        [{ "node": "TG: botones B", "type": "main", "index": 0 }],
+        [{ "node": "GET /transactions B", "type": "main", "index": 0 }],
+        [{ "node": "POST /corrections B", "type": "main", "index": 0 }],
+        [{ "node": "NoOp B", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /transactions B": { "main": [[{ "node": "Construir picker", "type": "main", "index": 0 }]] },
+    "Construir picker": { "main": [[{ "node": "Redis: guardar picker", "type": "main", "index": 0 }]] },
+    "Redis: guardar picker": { "main": [[{ "node": "TG: picker B", "type": "main", "index": 0 }]] },
+    "POST /corrections B": { "main": [[{ "node": "Handle corr", "type": "main", "index": 0 }]] },
+    "Handle corr": { "main": [[{ "node": "Route corr", "type": "main", "index": 0 }]] },
+    "Route corr": {
+      "main": [
+        [{ "node": "Redis: borrar (ok) B", "type": "main", "index": 0 }],
+        [{ "node": "Redis: revertir (err) B", "type": "main", "index": 0 }]
+      ]
+    },
+    "Redis: borrar (ok) B": { "main": [[{ "node": "TG: ok B", "type": "main", "index": 0 }]] },
+    "TG: ok B": { "main": [[{ "node": "IF: notificar B", "type": "main", "index": 0 }]] },
+    "IF: notificar B": {
+      "main": [
+        [{ "node": "TG: notificar B", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Redis: revertir (err) B": { "main": [[{ "node": "TG: err B", "type": "main", "index": 0 }]] }
+  }
+}

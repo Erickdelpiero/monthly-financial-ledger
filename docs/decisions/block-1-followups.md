@@ -459,6 +459,29 @@ service layer; `tests/test_api_list_transactions.py` (9 tests).
 - Everything in `docs/block-6-n8n-telegram.md` Part 5 (the manual runbook Erick
   executes) — nothing is applied until that + the design are reviewed.
 
+### B6-5 — n8n workflow review (cycle: Codex on the exports)
+
+Fixes to `n8n/workflow-*.json`:
+
+1. **B error path did not revert state** — the user was stuck in
+   `PROCESSING_CORRECTION` (which B ignores) until the 30-min TTL expired.
+   Added `Redis: revertir (err) B`; `Handle corr` now returns `revertState`
+   restoring `WAITING_CORRECTION_CONFIRMATION` with `pending_idempotency_key`,
+   mirroring A's `Redis: revertir (err)`.
+2. **"md" correction preview showed the OLD amount as final.** When the user
+   supplies free text, amount/description are only known after the API parses
+   it, so the before/after summary now shows
+   `[monto y descripcion a interpretar de: "<texto>"]` instead of the old
+   amount.
+3. `TG: err B` gained REINTENTAR/CANCELAR buttons (parity with A `TG: error`).
+4. **`/corregir` mid-registration** (PHASE-2.10 §20): A no longer silently
+   discards an in-progress registration. New `route 4` → *Preguntar pendiente*
+   sends "Tienes un registro sin terminar" + *Continuar registro / Cancelar y
+   corregir*; `route 3` resolves the answer.
+5. Fixed `Handle corr` reading `fromId` from the wrong node (was
+   `Correccion SM`, which does not carry it → notifications never fired); now
+   `$('Inicio (desde A)').item.json.fromId`.
+
 ### B6-4 — fix: DB URL no longer passes through Alembic's configparser
 
 Reported from the VPS: `alembic upgrade head` raised

@@ -265,10 +265,23 @@ In the n8n UI → Credentials:
 - **Header Auth**: name `X-API-Key`, value = `<api-token>` from step 3.
 - **Redis** (if step 0 showed auth): host `gonex-redis`, port `6379`, password.
 
-### Step 5 — build workflows A and B
+### Step 5 — import workflows A and B
 
-Follow Parts 3 and 4 node by node. **Keep both workflows INACTIVE.**
-Rollback: delete the workflows (never activated).
+The exports and step-by-step import instructions are in
+[`n8n/`](../n8n/) (`workflow-a-registro.json`, `workflow-b-correccion.json`,
+`README.md`). Summary:
+
+- Import **B first**, save it (so it gets an ID), leave it inactive.
+- Import **A**, then point its `Ejecutar correccion (B)` node at workflow B.
+- Fill the three `TODO (Step 8)` constants (`AUTHORIZED_IDS`, and the `OTHER`
+  chat-id map in two Code nodes) — see `n8n/README.md`.
+- Run the visual verification checklist in `n8n/README.md`.
+
+A Telegram bot has **one webhook**, so only **A** owns a `Telegram Trigger`;
+**B is a sub-workflow** A calls via *Execute Workflow* and **stays inactive
+forever** (sub-workflows run regardless of active state).
+
+Rollback: delete both workflows (never activated).
 
 ### Step 6 — capture the two `telegram_user_id`
 
@@ -296,11 +309,11 @@ data).
 ### Step 8 — activate & set the webhook (the one real production change)
 
 1. `getWebhookInfo` again, confirm still clean (already recorded).
-2. Activate **workflow A** in n8n → n8n registers the Telegram webhook to its
-   production URL automatically. (Or set it explicitly with `setWebhook`.)
-3. Activate **workflow B**.
+2. Activate **workflow A only** in n8n → n8n registers the Telegram webhook to
+   its production URL automatically. (Or set it explicitly with `setWebhook`.)
+   **Workflow B stays inactive** — it is a sub-workflow.
 
-Rollback: deactivate both workflows, then
+Rollback: deactivate workflow A, then
 `curl -s "https://api.telegram.org/bot${TOKEN}/deleteWebhook"`.
 
 ### Step 9 — end-to-end verification

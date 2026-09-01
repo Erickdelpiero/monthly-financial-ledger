@@ -482,6 +482,95 @@ Fixes to `n8n/workflow-*.json`:
    `Correccion SM`, which does not carry it → notifications never fired); now
    `$('Inicio (desde A)').item.json.fromId`.
 
+### B6-6 — fix: Redis `get` node drops the update fields (found on the VPS, Step 8/9)
+
+First real Telegram messages failed in **every** execution at `TG: con botones`
+with `Bad Request: chat_id is empty`. Root cause: the n8n Redis **`get`**
+node (`Load state` in A, `Cargar estado` in B) returns an item containing
+**only** the retrieved property (`stateRaw`); it does **not** carry through the
+fields the previous node produced. So `Router` (A) and `Correccion SM` (B),
+which did `const j = $input.first().json`, lost `chatId`, `fromId`, `text`,
+`callbackData`, `isCallback`, `updateId` and — in A — `blocked`. Effects:
+`chatId` undefined everywhere downstream (the visible error); the
+private-chat/authorised-sender guard silently bypassed (`blocked` undefined →
+`route 0` unreachable); routing collapsed to "always registration";
+`telegram_user_id` sent as `"undefined"`; idempotency key
+`telegram:undefined:update:undefined`.
+
+Fix (Code nodes only — paired-item access `$('X').item` still works, so no
+other node changed):
+
+- A `Router`: read the update fields from `$('Parse update').first().json`,
+  keep only `stateRaw` from `$input`, emit `Object.assign({}, p, {route, state})`.
+- B `Correccion SM`: rebuild `j` from `$('Inicio (desde A)').first().json`
+  (`chatId/fromId/updateId/text/callbackData/isCallback/forceCorrection`), keep
+  `stateRaw` from `$input`.
+
+`n8n/README.md` gained a checklist line so a future re-export doesn't
+"simplify" these back to `$json`.
+
+### B6-7 — fix: inline keyboards didn't render + n8n attribution footer (VPS, Step 9)
+
+Live "¿Qué ocurrió?" arrived as plain text, no buttons, plus a
+" This message was sent automatically with n8n" footer. Two causes:
+
+1. **Keyboard shape.** The `kb()` helper and the hand-built keyboards wrapped
+   each button as `{ button: { text, additionalFields } }`. The n8n Telegram
+   node reads `inlineKeyboard.rows[].row.buttons[].text` /
+   `.additionalFields` **directly** — the extra `button` key made every button
+   `text: undefined`, so Telegram dropped the markup. Removed the wrapper in
+   `Registro SM` / `Correccion SM` `kb()`, `Preguntar pendiente`,
+   `Construir picker`, and the `TG: error` / `TG: err B` literals.
+2. **Attribution.** The Telegram `sendMessage` node defaults
+   `appendAttribution: true`. Set `additionalFields.appendAttribution = false`
+   on all 14 `sendMessage` nodes (not the trigger).
+
+Repo exports fixed. On the VPS the low-risk path is now a **re-import** of both
+files followed by re-entering the 3 Step-8 constants + the workflow-B id, since
+the alternative is ~20 hand-edits.
+
+**Update:** item 2 (attribution) held; item 1 (keyboard shape) did **not** fix
+the missing buttons — superseded by B6-8.
+
+### B6-8 — inline keyboards: native Telegram node can't do dynamic `reply_markup`
+
+Even with the shape corrected, buttons still didn't render. Root cause is a
+known limitation of `n8n-nodes-base.telegram`: it does not reliably build an
+inline keyboard from an expression (any shape). Confirmed on the n8n community
+forum ("Use HTTP node instead. Telegram node doesn't support dynamic
+properties" — community.n8n.io/t/…/185655).
+
+**Fix:** the 6 keyboard-sending nodes are now **HTTP Request** nodes calling
+`https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage` with a
+JSON body (`chat_id`, `text`, `reply_markup`). The `kb()` helper and the two
+literal keyboards (`Preguntar pendiente`, `Construir picker`) now emit
+Telegram's native `{ inline_keyboard: [[{ text, callback_data }]] }` directly,
+so the HTTP body passes `n8nKeyboard` straight through. `TG: error` /
+`TG: err B` carry their fixed retry/cancel markup inline in the body.
+
+- **Token:** `TELEGRAM_BOT_TOKEN` env var on the `gonex-n8n` container
+  (Erick's choice over a Redis config key: better isolation — `gonex-redis`
+  has no auth and is shared with 7 containers). Never in Git or a node.
+  n8n credentials can't be referenced from an HTTP Request node's expressions,
+  and Telegram only accepts the token in the URL path (not a header/query), so
+  a "Header Auth" credential is not an option.
+- **The other two constants moved to `$env` too** (Erick, so a re-import keeps
+  nothing to re-type): `Parse update` reads `AUTHORIZED_IDS` from
+  `TELEGRAM_AUTHORIZED_IDS` (`"id1,id2"` → numbers); `Handle API` / `Handle
+  corr` read `OTHER` from `TELEGRAM_OTHER_MAP` (JSON string → `JSON.parse`).
+  Both `try/catch` to `[]` / `{}` — fail closed (empty auth list = "Este bot
+  es privado"; empty map = no cross-notification). No `TODO (Step 8)` left in
+  the exports.
+- The native Telegram node is kept for the Trigger and the 8 non-keyboard
+  sends (they work fine and reuse the existing `Telegram account-CuentasDN`
+  credential).
+- Also hardened: `Correccion SM` / `Router` parse guard is now
+  `(… ) || {}` (an empty picker used to persist the string `"null"`), and the
+  empty-picker branch writes `stateNext: {}` instead of `null`.
+
+Runbook Step 4 gained the env-var step; `n8n/README.md` credential map + the
+keyboard checklist item updated.
+
 ### B6-4 — fix: DB URL no longer passes through Alembic's configparser
 
 Reported from the VPS: `alembic upgrade head` raised

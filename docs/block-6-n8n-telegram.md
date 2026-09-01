@@ -331,12 +331,45 @@ explicit grants either way.
 Rollback (only meaningful *before* Step 7 — this re-opens the gap the fix
 just closed): `psql ... -c "REASSIGN OWNED BY <admin> TO money_ledger_app;"`.
 
-### Step 4 — n8n credentials
+### Step 4 — n8n credentials + the bot-token env var
 
 In the n8n UI → Credentials:
-- **Telegram API**: paste the `@CuentasDN_bot` token.
-- **Header Auth**: name `X-API-Key`, value = `<api-token>` from step 3.
-- **Redis** (if step 0 showed auth): host `gonex-redis`, port `6379`, password.
+- **Telegram API** (`Telegram account-CuentasDN`): paste the `@CuentasDN_bot`
+  token. Covers the Telegram Trigger + the 8 non-keyboard replies.
+- **Header Auth** (`Header Auth account-CuentasDN`): name `X-API-Key`,
+  value = `<api-token>` from step 3.
+- **Redis** (`Redis-CuentasDN`): host `gonex-redis`, port `6379` (step 0
+  showed `PONG` / no auth → leave the password blank).
+
+Then add **three env vars to the `gonex-n8n` container** — the workflows read
+all of `TELEGRAM_BOT_TOKEN` (keyboard HTTP calls, B6-8), the auth list, and
+the notify map from `$env`, so a re-import never loses them:
+
+```
+# Edit the file directly (keep values out of shell history). Add, next to
+# whatever gonex-n8n already has:
+TELEGRAM_BOT_TOKEN=123456:AA...                                  # @CuentasDN_bot token
+TELEGRAM_AUTHORIZED_IDS=<erick_id>,<mama_id>                     # comma-separated, no spaces
+TELEGRAM_OTHER_MAP={"<erick_id>":"<mama_id>","<mama_id>":"<erick_id>"}   # JSON, no spaces
+
+# then recreate ONLY the n8n container:
+cd ~/gonex/docker && docker compose up -d --no-deps gonex-n8n
+```
+
+Where the three lines go depends on how `gonex-n8n` gets its env:
+- service has `env_file: .env` (or `- .env`) → put them in that `.env`.
+- service has an explicit `environment:` list → add
+  `- TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}` (×3) to the list *and* the
+  values in `.env`; or the literal `- TELEGRAM_BOT_TOKEN=123456:AA...` (×3)
+  directly. A bare project-root `.env` is only used for `${...}` substitution
+  in the compose file, **not** auto-injected into the container.
+
+`TELEGRAM_OTHER_MAP` has no `$` or `#`, so it needs no quoting in `.env`.
+
+Confirm: n8n UI → any Code node → an expression `{{ $env.TELEGRAM_BOT_TOKEN }}`
+resolves (not blank). If blank, `N8N_BLOCK_ENV_ACCESS_IN_NODE` is `true` on the
+container — remove it and recreate again.
+Rollback: remove the three lines, `docker compose up -d --no-deps gonex-n8n`.
 
 ### Step 5 — import workflows A and B
 
@@ -346,8 +379,9 @@ The exports and step-by-step import instructions are in
 
 - Import **B first**, save it (so it gets an ID), leave it inactive.
 - Import **A**, then point its `Ejecutar correccion (B)` node at workflow B.
-- Fill the three `TODO (Step 8)` constants (`AUTHORIZED_IDS`, and the `OTHER`
-  chat-id map in two Code nodes) — see `n8n/README.md`.
+- Re-link credentials on the nodes if the import didn't match them by name.
+- **Nothing else to fill in** — `AUTHORIZED_IDS` / `OTHER` / the bot token are
+  all `$env` (Step 4). That's why a re-import is now cheap.
 - Run the visual verification checklist in `n8n/README.md`.
 
 A Telegram bot has **one webhook**, so only **A** owns a `Telegram Trigger`;
@@ -428,6 +462,7 @@ Report the results; that closes Block 6.
 | *(if applicable)* `REASSIGN OWNED BY money_ledger_app TO <admin>` + `ALTER DATABASE ... OWNER TO <admin>` (remediation for a Step 3 already run as `money_ledger_app`) | step 3 remediation | `REASSIGN OWNED BY <admin> TO money_ledger_app` (only before step 7) |
 | `ledger-api` container | step 3 | `docker rm -f ledger-api` |
 | n8n credentials | step 4 | delete credentials |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_AUTHORIZED_IDS` + `TELEGRAM_OTHER_MAP` env vars on `gonex-n8n` + container recreate | step 4 | remove the 3 lines, recreate `gonex-n8n` |
 | Workflows A/B (inactive) | step 5 | delete workflows |
 | 2 `Person` rows | step 7 | `UPDATE person SET is_active = false` |
 | **Telegram webhook set to n8n** | step 8 | deactivate workflows + `deleteWebhook` |
@@ -438,13 +473,18 @@ Nothing here is applied until this register and Parts 2–5 are reviewed.
 
 ## Part 7 — still open
 
-- **Redis auth** — record the runbook step 0 result (`PONG` vs `NOAUTH`) here
-  and, if auth is on, that the n8n Redis credential was created with the
-  password. Needed to call Block 6 closed.
-- **The three `TODO (Step 8)` constants** (`AUTHORIZED_IDS` + the two `OTHER`
-  maps) are entered **in the n8n UI on the VPS only**, never committed — the
-  two `telegram_user_id` are real personal ids in a public repo
-  (`.ai/decisions.md`). The repo JSON keeps the placeholders. See `n8n/README.md`.
+- ~~Redis auth~~ — resolved on the VPS: `docker exec gonex-redis redis-cli
+  ping` → `PONG` (no auth). The n8n **Redis-CuentasDN** credential needs host
+  `gonex-redis`, port `6379`, no password.
+- **Workflow bugs found at Step 8/9** — B6-6 (Redis `get` drops non-`stateRaw`
+  fields → `chat_id is empty`), B6-7 (n8n attribution footer), B6-8 (native
+  Telegram node can't render a dynamic inline keyboard → 6 sends moved to HTTP
+  Request). All fixed in the repo exports; on the VPS applied by **re-importing
+  both workflows** (cheap now — see next point).
+- **The three real-identifier values are `$env` vars on `gonex-n8n`**
+  (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_AUTHORIZED_IDS`, `TELEGRAM_OTHER_MAP`) — set
+  once in Step 4, read at runtime, never in Git, and a re-import no longer
+  loses them. Both parses fail closed.
 - ~~Exact final button/template wording~~ — resolved: the fixed templates live
   in `n8n/workflow-*.json`; semantics are locked by PHASE-2.10.
 - Whether the interim `ledger-api` from step 3 is kept until Block 8 or Block 8

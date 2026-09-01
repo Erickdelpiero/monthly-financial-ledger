@@ -40,24 +40,30 @@ Trigger` on `@CuentasDN_bot` would fight over it. So:
 3. In A, open the node **`Ejecutar correccion (B)`** → the *Workflow*
    field currently says `REPLACE_WITH_WORKFLOW_B_ID` → pick
    **"Ledger B - Correccion (sub-workflow de A)"** from the dropdown → Save.
+4. **Set the 3 `$env` vars on the `gonex-n8n` container** (runbook Step 4):
+   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_AUTHORIZED_IDS`, `TELEGRAM_OTHER_MAP`.
+   The 6 keyboard-sending nodes are plain HTTP Request calls to
+   `https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage`
+   (the native `n8n-nodes-base.telegram` node does **not** support a
+   dynamically-built inline keyboard — B6-8); the other two vars carry the
+   auth list and the notify map (see the table below). Nothing to type into
+   nodes after import. The native Telegram credential still covers the Trigger
+   and every non-keyboard reply.
 
-## Fill in the three project-specific values (search for `TODO (Step 8)`)
+## The three project-specific values are `$env` vars (nothing to edit in n8n)
 
-> **Edit these in the n8n UI on the VPS only — never in this repo.** The two
-> `telegram_user_id` are real personal identifiers and this is a public repo
-> (`.ai/decisions.md` → "no real Telegram ids in Git"). The committed JSON
-> keeps the `TODO (Step 8)` placeholders; the real values live only in the
-> imported workflows on the VPS. If you ever re-export the workflows for the
-> repo, blank these three constants back to `[]` / `{}` first.
+All three real-identifier values are read from the `gonex-n8n` container
+environment at runtime, so a re-import never loses them and they stay out of
+this public repo (`.ai/decisions.md` → "no real Telegram ids in Git").
 
-| Where | Constant | Value |
-|---|---|---|
-| A → `Parse update` (Code) | `AUTHORIZED_IDS` | `[<erick_id>, <mama_id>]` — the two `telegram_user_id` as **numbers** (from runbook Step 6). Empty = nobody allowed. |
-| A → `Handle API` (Code) | `OTHER` | `{ "<erick_id>": "<mama_id>", "<mama_id>": "<erick_id>" }` — maps a sender to the other person's chat id (for a bot, chat id == user id), keys as **strings**. |
-| B → `Handle corr` (Code) | `OTHER` | same map as above. |
+| Read in | Code var | `$env` var | Format | Missing / bad → |
+|---|---|---|---|---|
+| A `Parse update` | `AUTHORIZED_IDS` | `TELEGRAM_AUTHORIZED_IDS` | `id1,id2` (comma-separated) | `[]` → every sender gets "Este bot es privado" |
+| A `Handle API` | `OTHER` | `TELEGRAM_OTHER_MAP` | JSON `{"id1":"id2","id2":"id1"}` | `{}` → no cross-notification (main flow still works) |
+| B `Handle corr` | `OTHER` | `TELEGRAM_OTHER_MAP` | same | same |
 
-If `AUTHORIZED_IDS` is left empty the bot will only ever reply "Este bot es
-privado" — that is the fail-closed default; fill it before Step 9.
+Both parse fail-closed (wrapped in `try/catch`). Set the vars in runbook
+Step 4 alongside `TELEGRAM_BOT_TOKEN`.
 
 ## Confirm the API URL
 
@@ -71,15 +77,27 @@ with `gonex-n8n` (runbook Steps 1 and 3). If you named it differently, update:
 
 ## Visual verification checklist (do this before activating A)
 
-For **every node that has a credential** (all `Telegram`, `Redis`, and HTTP
-Request nodes), open it and check the credential dropdown shows the right one:
+For **every node that has a credential**, open it and check the credential
+dropdown shows the right one:
 
-- Telegram nodes + `Telegram Trigger` → **Telegram API**
+- `Telegram Trigger` + the native `Telegram` sendMessage nodes (`Bot privado`,
+  `TG: texto`, `TG: registrado`, `TG: notificar`, `TG: seguir`; B `TG: texto B`,
+  `TG: ok B`, `TG: notificar B`) → **Telegram API**
 - Redis nodes → **Redis**
-- HTTP Request nodes → **Header Auth** (Generic Credential Type → Header Auth)
+- The **ledger-API** HTTP Request nodes (`POST /transactions`; B
+  `GET /transactions B`, `POST /corrections B`) → **Header Auth**
+- The **Telegram-API** HTTP Request nodes (`TG: con botones`, `TG: error`,
+  `TG: preguntar pendiente`; B `TG: botones B`, `TG: picker B`, `TG: err B`) →
+  **no credential**; they authenticate via `{{ $env.TELEGRAM_BOT_TOKEN }}` in
+  the URL.
 
 Then:
 
+- [ ] `Router` (A) reads the update fields from `$('Parse update')` and
+      `Correccion SM` (B) from `$('Inicio (desde A)')` — **not** from `$json` /
+      `$input`. The Redis `get` node (`Load state` / `Cargar estado`) returns
+      only `{ stateRaw }` and drops everything else; a re-export must not
+      "simplify" these back to `$input`. (See B6-6.)
 - [ ] A `Telegram Trigger`: *Updates* = `message` and `callback_query`.
 - [ ] A `Ejecutar correccion (B)`: points at workflow B (not the placeholder).
 - [ ] Every `Switch` node: *Mode* = **Expression**, and *Number of Outputs*
@@ -87,14 +105,18 @@ Then:
       A `Route SM`=4, A `Route API`=2; B `Estado B`=3, B `Route SM B`=5,
       B `Route corr`=2). If n8n shows fewer output dots than connections,
       set *Number of Outputs* manually.
-- [ ] The **6** nodes that send inline keyboards (A `TG: con botones`,
-      A `TG: error`, A `TG: preguntar pendiente`; B `TG: botones B`,
-      B `TG: picker B`, B `TG: err B`):
-      *Reply Markup* = **Inline Keyboard**. The keyboard is passed as an
-      expression (`$json.n8nKeyboard` / a literal). If n8n won't accept the
-      expression on the keyboard field, switch that field to "expression" mode
-      (the small `fx`), or rebuild the keyboard rows by hand from the Code
-      node's structure (`rows[].row.buttons[].button.{text, additionalFields.callback_data}`).
+- [ ] The **6** keyboard-sending nodes (A `TG: con botones`, `TG: error`,
+      `TG: preguntar pendiente`; B `TG: botones B`, `TG: picker B`,
+      `TG: err B`) are **HTTP Request** nodes (`POST` to
+      `…/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage`, `Body Content Type` =
+      JSON). The Code nodes emit `n8nKeyboard` already in Telegram's native
+      `{ inline_keyboard: [[{ text, callback_data }]] }` shape; the HTTP body
+      passes it straight through as `reply_markup`. Do **not** convert these
+      back to the native Telegram node — it silently drops dynamic keyboards
+      (B6-8).
+- [ ] `{{ $env.TELEGRAM_BOT_TOKEN }}` resolves: `gonex-n8n` has the env var and
+      `N8N_BLOCK_ENV_ACCESS_IN_NODE` is not `true`. Test-run `TG: con botones`
+      and confirm the URL is not `…/botundefined/…`.
 - [ ] A `IF decision`: condition is `decision` **equals** `switch`; *true*
       output → `Ejecutar correccion (B)`, *false* → `Redis: set (limpiar)`.
 - [ ] A `IF: hay a quien notificar` / B `IF: notificar B`: condition is
@@ -102,6 +124,10 @@ Then:
       node, the *false* output goes nowhere.
 - [ ] Redis nodes: `Get` nodes have *Property Name* `stateRaw` and *Key Type*
       `string`; `Set` nodes have *Expire* on with *TTL* `1800`.
+- [ ] Every **native** Telegram `sendMessage` node has *Append n8n Attribution*
+      = **off** (`additionalFields.appendAttribution: false`) — otherwise the
+      reply ends with " This message was sent automatically with n8n". (The
+      HTTP-Request sends don't have this problem.)
 - [ ] Run **`Load state`** once with *Execute Node* on a hand-made pinned item
       `{ "chatId": 123 }` to confirm the Redis credential connects (it returns
       an empty `stateRaw` for a missing key — that is fine).

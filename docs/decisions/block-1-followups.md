@@ -586,3 +586,64 @@ URL the same way. Regression:
 `tests/test_migrations.py::test_upgrade_tolerates_percent_in_the_db_url`.
 Confirmed: CLI `alembic upgrade head` with a `%`-laden `DATABASE_URL` reaches
 `0002 (head)`.
+
+---
+
+## Block 6 — CLOSE-OUT
+
+### B6-9 — Block 6 closed (2026-09-01); the real blocker was `N8N_BLOCK_ENV_ACCESS_IN_NODE`
+
+**Root cause (not just "resolved").** B6-6/7/8 were real bugs, but none was why
+`AUTHORIZED_IDS` / `OTHER` / the bot token kept coming back empty on the VPS.
+The blocker was **n8n blocking `$env` in Code nodes by default**:
+`N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults to `true` from n8n **2.0** onward. It
+had never been set on the `gonex-n8n` service, so every `$env.*` read (in a
+Code node *or* an expression) returned `undefined` regardless of how many times
+the workflow code was fixed or the workflows re-imported. That is why the
+symptom survived every earlier fix.
+
+**Fix (VPS `docker-compose.yml`, n8n service `environment:` block):**
+
+```yaml
+    environment:
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+```
+
+then recreate the container (`docker compose up -d --no-deps <n8n service>`).
+
+**Security trade-off (accepted):** this enables `$env` for **every** workflow
+on that n8n instance, not only ours. `gonex-n8n` is shared infra. Anyone who
+can edit a workflow there can now read the container's env (which includes the
+bot token and any other service's secrets passed as env). Judged acceptable
+for a single-operator instance; revisit if more people get n8n editor access.
+
+**Reusable finding (framework, not just this project):** on any n8n ≥ 2.0, a
+Code node or expression that reads `$env` needs
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` set **explicitly** on the container — do
+not assume the default. And weigh the trade-off above before choosing `$env`
+over a per-workflow mechanism (a Set node, a fetched config row, a dedicated
+credential) on a shared instance.
+
+**E2E verification — PARTIAL.** Registration happy path confirmed end to end
+(Telegram screenshots): inline buttons render, no "sent automatically with n8n"
+footer, full flow tipo → monto/descripción → fecha → resumen → CONFIRMAR →
+"Registrado", and `erick_gasta_para_mama` `S/ 10.00` →
+"Mamá le debe a Erick: S/ 10.00" (sign matches PHASE-2.3). **Deferred to a
+later session, non-blocking:** the Nora notification, `GET /api/v1/balance`
+via the API, `/corregir` with the before/after summary, Nora not seeing
+Erick's row in her picker (+ `403 CORRECTION_NOT_ALLOWED` on a direct call),
+and netting the balance back to zero. Once the deferred `S/ 10.00` test row is
+netted, note it and its offset here.
+
+**State on close.** Workflows A/B on the VPS (A active, B inactive
+sub-workflow); webhook on `@CuentasDN_bot` → n8n; 2 `Person` rows
+(`8398733157` Erick, `8471171060` Nora); config as `$env` on `gonex-n8n`
+(`TELEGRAM_BOT_TOKEN` / `TELEGRAM_AUTHORIZED_IDS` / `TELEGRAM_OTHER_MAP` +
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false`). One `S/ 10.00` real test row in the
+ledger, pending offset. Interim `ledger-api` container stays until Block 8.
+
+**Cycle note.** B6-4/6/7/8/9 were found and fixed reactively during the VPS
+deploy, outside the normal "Codex reviews" loop. The Python suite is unchanged
+by them (the changes are n8n JSON exports + docs); no new pytest run was
+required. A Codex pass over `n8n/workflow-*.json` + this entry is the
+outstanding review debt if the pilot wants one before Block 7.

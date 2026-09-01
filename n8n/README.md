@@ -65,6 +65,13 @@ this public repo (`.ai/decisions.md` → "no real Telegram ids in Git").
 Both parse fail-closed (wrapped in `try/catch`). Set the vars in runbook
 Step 4 alongside `TELEGRAM_BOT_TOKEN`.
 
+> **Required for any of this to work:** n8n ≥ 2.0 blocks `$env` in Code nodes
+> and expressions by default (`N8N_BLOCK_ENV_ACCESS_IN_NODE`, default `true`).
+> Set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` in the n8n service's `environment:`
+> and recreate the container, or every `$env.*` read silently returns
+> `undefined` — the symptom that blocked Block 6 for a whole cycle (B6-9).
+> Trade-off: this enables `$env` for **every** workflow on that n8n instance.
+
 ## Confirm the API URL
 
 All HTTP Request nodes call `http://ledger-api:8000/api/v1/...`. This assumes

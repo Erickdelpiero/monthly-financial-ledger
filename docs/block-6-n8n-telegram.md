@@ -1,8 +1,17 @@
 # Block 6 — n8n + Telegram integration
 
-**Status:** design finalized. The API-side policy fix (D4) is implemented and
-tested. **Nothing on the VPS / n8n / the Telegram webhook has been changed** by
-an agent — the manual runbook in Part 5 is for Erick to execute.
+**Status:** CLOSED — 2026-09-01. Workflows A/B are deployed on the VPS, the
+webhook is active on `@CuentasDN_bot`, and the two `Person` rows are seeded.
+E2E verification is **partial**: the registration happy path is confirmed end
+to end (buttons render, no n8n footer, `erick_gasta_para_mama` S/ 10.00 →
+"Mamá le debe a Erick: S/ 10.00", sign per PHASE-2.3). Still to confirm in a
+later session, **not blocking the close**: the Nora notification, `GET
+/api/v1/balance` via the API, `/corregir` with the before/after summary, that
+Nora does not see Erick's row in her picker, and netting the balance to zero.
+
+Every agent-side change is in the repo; every VPS / n8n / webhook action was
+executed by Erick from the Part 5 runbook. Deploy-time bug history: B6-4, B6-6,
+B6-7, B6-8, and the close-out **B6-9** in `docs/decisions/block-1-followups.md`.
 
 Reference: PHASE-2.10 (Telegram ↔ n8n UX & conversational flow), PHASE-2.4 §5
 (n8n owns conversational state), PHASE-2.5 (API contract).
@@ -366,10 +375,17 @@ Where the three lines go depends on how `gonex-n8n` gets its env:
 
 `TELEGRAM_OTHER_MAP` has no `$` or `#`, so it needs no quoting in `.env`.
 
+**Also required** (n8n ≥ 2.0 blocks `$env` by default — this is what blocked
+Block 6 for a cycle, B6-9): in the n8n service's `environment:` block of the
+VPS `docker-compose.yml`, add `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` — a bare
+`.env` line is **not** enough for this one, it must be on the service env.
+Recreate the container.
+
 Confirm: n8n UI → any Code node → an expression `{{ $env.TELEGRAM_BOT_TOKEN }}`
-resolves (not blank). If blank, `N8N_BLOCK_ENV_ACCESS_IN_NODE` is `true` on the
-container — remove it and recreate again.
-Rollback: remove the three lines, `docker compose up -d --no-deps gonex-n8n`.
+resolves (not blank). Blank ⇒ `N8N_BLOCK_ENV_ACCESS_IN_NODE` is not `false` on
+the running container.
+Rollback: remove the added lines + `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
+`docker compose up -d --no-deps gonex-n8n`.
 
 ### Step 5 — import workflows A and B
 
@@ -389,6 +405,12 @@ A Telegram bot has **one webhook**, so only **A** owns a `Telegram Trigger`;
 forever** (sub-workflows run regardless of active state).
 
 Rollback: delete both workflows (never activated).
+
+> **Steps 6–8: DONE (2026-09-01).** IDs captured (`8398733157` Erick,
+> `8471171060` Nora); two `Person` rows seeded as the `gonex` admin; workflow A
+> active; `getWebhookInfo` → n8n URL, `pending_update_count: 0`. The 3 values
+> are now `$env` on `gonex-n8n` (`TELEGRAM_AUTHORIZED_IDS` / `TELEGRAM_OTHER_MAP`
+> / `TELEGRAM_BOT_TOKEN`), not typed into nodes.
 
 ### Step 6 — capture the two `telegram_user_id`
 
@@ -440,13 +462,20 @@ Rollback: deactivate workflow A, then
 - Mamá tries `/corregir` on Erick's row → she does not see it in the picker;
   a direct API call would get `403 CORRECTION_NOT_ALLOWED`.
 
-The ledger is append-only, so this `S/ 12.00` test entry cannot be deleted. To
-bring the real balance back to zero before first real use, register the
-offsetting movement from the bot (e.g. Mamá: *"Mamá me entregó dinero"* /
-`mama_entrega_dinero` `S/ 12.00`) so the two net out. Note both the test
-`erick_gasta_para_mama` row and this offset in the block close-out entry.
+The ledger is append-only, so this test entry cannot be deleted. To bring the
+real balance back to zero before first real use, register the offsetting
+movement from the bot (e.g. Nora: *"Mamá me entregó dinero"* /
+`mama_entrega_dinero`) so the two net out. Note both the test
+`erick_gasta_para_mama` row and this offset in the close-out entry.
 
-Report the results; that closes Block 6.
+> **Step 9: PARTIAL (2026-09-01).** Registration happy path confirmed end to
+> end from Telegram screenshots — buttons render, no n8n footer, tipo → monto →
+> fecha → resumen → CONFIRMAR → "Registrado", and `S/ 10.00`
+> `erick_gasta_para_mama` → "Mamá le debe a Erick: S/ 10.00" (sign per
+> PHASE-2.3). **Deferred to a later session** (non-blocking): Nora
+> notification, `GET /api/v1/balance` via API, `/corregir` before/after
+> summary, Nora's picker not showing Erick's row, balance-to-zero netting.
+> Tracked as B6-9.
 
 ---
 
@@ -462,7 +491,7 @@ Report the results; that closes Block 6.
 | *(if applicable)* `REASSIGN OWNED BY money_ledger_app TO <admin>` + `ALTER DATABASE ... OWNER TO <admin>` (remediation for a Step 3 already run as `money_ledger_app`) | step 3 remediation | `REASSIGN OWNED BY <admin> TO money_ledger_app` (only before step 7) |
 | `ledger-api` container | step 3 | `docker rm -f ledger-api` |
 | n8n credentials | step 4 | delete credentials |
-| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_AUTHORIZED_IDS` + `TELEGRAM_OTHER_MAP` env vars on `gonex-n8n` + container recreate | step 4 | remove the 3 lines, recreate `gonex-n8n` |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_AUTHORIZED_IDS` + `TELEGRAM_OTHER_MAP` env vars **and `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`** on `gonex-n8n` + container recreate | step 4 | remove those env entries, recreate `gonex-n8n` |
 | Workflows A/B (inactive) | step 5 | delete workflows |
 | 2 `Person` rows | step 7 | `UPDATE person SET is_active = false` |
 | **Telegram webhook set to n8n** | step 8 | deactivate workflows + `deleteWebhook` |
@@ -471,21 +500,30 @@ Nothing here is applied until this register and Parts 2–5 are reviewed.
 
 ---
 
-## Part 7 — still open
+## Part 7 — resolved / carried forward
 
-- ~~Redis auth~~ — resolved on the VPS: `docker exec gonex-redis redis-cli
-  ping` → `PONG` (no auth). The n8n **Redis-CuentasDN** credential needs host
-  `gonex-redis`, port `6379`, no password.
-- **Workflow bugs found at Step 8/9** — B6-6 (Redis `get` drops non-`stateRaw`
-  fields → `chat_id is empty`), B6-7 (n8n attribution footer), B6-8 (native
-  Telegram node can't render a dynamic inline keyboard → 6 sends moved to HTTP
-  Request). All fixed in the repo exports; on the VPS applied by **re-importing
-  both workflows** (cheap now — see next point).
-- **The three real-identifier values are `$env` vars on `gonex-n8n`**
-  (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_AUTHORIZED_IDS`, `TELEGRAM_OTHER_MAP`) — set
-  once in Step 4, read at runtime, never in Git, and a re-import no longer
-  loses them. Both parses fail closed.
-- ~~Exact final button/template wording~~ — resolved: the fixed templates live
-  in `n8n/workflow-*.json`; semantics are locked by PHASE-2.10.
-- Whether the interim `ledger-api` from step 3 is kept until Block 8 or Block 8
-  redeploys from scratch — Erick's call during Block 8 (not a Block 6 blocker).
+Resolved during the deploy (details in `docs/decisions/block-1-followups.md`):
+
+- **Redis auth** — `redis-cli ping` → `PONG` (no auth); `Redis-CuentasDN`
+  credential = host `gonex-redis`, port `6379`, no password.
+- **Deploy-time workflow bugs** — B6-4 (Alembic `%`), B6-6 (Redis `get` drops
+  fields), B6-7 (attribution footer), B6-8 (native Telegram node can't render a
+  dynamic keyboard → 6 HTTP-Request sends).
+- **The real blocker (B6-9)** — n8n blocks `$env` in Code nodes by default
+  (`N8N_BLOCK_ENV_ACCESS_IN_NODE`, default `true` since n8n 2.0). It was never
+  set on `gonex-n8n`, so `AUTHORIZED_IDS` / `OTHER` / the token came back empty
+  no matter how the code changed. Fix: `N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"`
+  in the `environment:` block of the n8n service in the VPS `docker-compose.yml`
+  + recreate the container.
+- **Button/template wording** — final templates live in `n8n/workflow-*.json`.
+- **Config as `$env`** — `TELEGRAM_BOT_TOKEN` / `TELEGRAM_AUTHORIZED_IDS` /
+  `TELEGRAM_OTHER_MAP` on `gonex-n8n`; not in Git, survive a re-import, parse
+  fail-closed.
+
+Carried forward (do **not** block the Block 6 close):
+
+- **E2E verification is partial** — registration happy path confirmed; the
+  correction / notification / balance-API / no-cross-correction / netting
+  checks are for a later session (B6-9).
+- **Interim `ledger-api`** from Step 3 — keep until Block 8 or redeploy from
+  scratch is Erick's call during Block 8.

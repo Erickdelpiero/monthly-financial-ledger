@@ -48,27 +48,32 @@ runuser -u mfl-deploy -- git -C "$REPO_DIR" checkout --quiet -B main origin/main
 cd "$REPO_DIR"
 CF=deploy/compose.prod.yml
 
+# `docker compose -f <subdir>/file` takes the project directory from that
+# subdir, so it would look for the .env in deploy/ and miss $REPO_DIR/.env.
+# Point every invocation at the real env file explicitly.
+DC=(docker compose --env-file "$REPO_DIR/.env" -f "$CF")
+
 echo "==> pull ${IMAGE}"
 docker pull "$IMAGE"
 
 echo "==> migrate (alembic upgrade head as the schema-owner role; values from ${REPO_DIR}/.env)"
-docker compose -f "$CF" run --rm migrate
+"${DC[@]}" run --rm migrate
 
 echo "==> (re)create ledger-api"
 # First pipeline run: this clears the Block-6 interim `docker run` container that
 # still owns the name `ledger-api`. Afterwards it is a no-op compose would do
 # itself; the ~2 s gap on a personal 2-user bot is acceptable.
 docker rm -f ledger-api >/dev/null 2>&1 || true
-docker compose -f "$CF" up -d api
+"${DC[@]}" up -d api
 
 echo "==> health gate"
 ok=""
 for _ in $(seq 1 30); do
-  if docker compose -f "$CF" exec -T api python -c \
+  if "${DC[@]}" exec -T api python -c \
        "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',timeout=3).status==200 else 1)"; then
     ok=1; break
   fi
   sleep 2
 done
-[ -n "$ok" ] || { docker compose -f "$CF" logs --tail 50 api; exit 1; }
+[ -n "$ok" ] || { "${DC[@]}" logs --tail 50 api; exit 1; }
 echo "==> deployed ${IMAGE}"

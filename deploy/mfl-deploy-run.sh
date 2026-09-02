@@ -44,6 +44,10 @@ export IMAGE
 # git's "dubious ownership" guard and rewrite file owners).
 runuser -u mfl-deploy -- git -C "$REPO_DIR" fetch --quiet origin main
 runuser -u mfl-deploy -- git -C "$REPO_DIR" checkout --quiet -B main origin/main
+# Discard any local drift to a tracked file so the deploy always runs the
+# committed compose.prod.yml exactly (B8-11 R5). Untracked files (./.env) are
+# left alone.
+runuser -u mfl-deploy -- git -C "$REPO_DIR" reset --hard --quiet origin/main
 
 cd "$REPO_DIR"
 CF=deploy/compose.prod.yml

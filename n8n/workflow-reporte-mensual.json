@@ -36,16 +36,44 @@
         "url": "=http://ledger-api:8000/api/v1/reports/monthly/image?year={{ $json.year }}&month={{ $json.month }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "options": { "response": { "response": { "neverError": true, "responseFormat": "file", "outputPropertyName": "data" } } }
+        "options": { "response": { "response": { "neverError": true, "fullResponse": true, "responseFormat": "file", "outputPropertyName": "data" } } }
       },
       "credentials": { "httpHeaderAuth": { "name": "Header Auth account-CuentasDN" } }
+    },
+    {
+      "id": "m5",
+      "name": "PNG OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [640, 300],
+      "parameters": {
+        "options": { "typeValidation": "loose" },
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": { "type": "number", "operation": "equals" }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.headers && $json.headers['content-type'] }}",
+              "rightValue": "image/png",
+              "operator": { "type": "string", "operation": "contains" }
+            }
+          ]
+        }
+      }
     },
     {
       "id": "m4",
       "name": "TG: enviar imagen",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [660, 300],
+      "position": [860, 200],
       "parameters": {
         "resource": "message",
         "operation": "sendPhoto",
@@ -55,11 +83,32 @@
         "additionalFields": { "appendAttribution": false }
       },
       "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    },
+    {
+      "id": "m6",
+      "name": "TG: fallback",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [860, 400],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prep mensual').item.json.chatId }}",
+        "text": "No se pudo generar el reporte mensual.",
+        "additionalFields": { "appendAttribution": false }
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
     }
   ],
   "connections": {
     "Dia 1, 07:00": { "main": [[{ "node": "Prep mensual", "type": "main", "index": 0 }]] },
     "Prep mensual": { "main": [[{ "node": "GET /reports/monthly/image", "type": "main", "index": 0 }]] },
-    "GET /reports/monthly/image": { "main": [[{ "node": "TG: enviar imagen", "type": "main", "index": 0 }]] }
+    "GET /reports/monthly/image": { "main": [[{ "node": "PNG OK?", "type": "main", "index": 0 }]] },
+    "PNG OK?": {
+      "main": [
+        [{ "node": "TG: enviar imagen", "type": "main", "index": 0 }],
+        [{ "node": "TG: fallback", "type": "main", "index": 0 }]
+      ]
+    }
   }
 }

@@ -19,6 +19,11 @@ htmlcov/
 n8n_data/
 *.log
 
+# --- editor cruft ---
+*.swp
+*.swo
+*~
+
 # --- real financial data & generated artifacts must never enter Git ---
 # (PHASE-2.3 §23, PHASE-2.4 §19, PHASE-2.6 §25)
 /data/

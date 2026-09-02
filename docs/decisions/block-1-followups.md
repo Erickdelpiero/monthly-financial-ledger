@@ -903,3 +903,195 @@ that way: `277 passed` (incl. both previously-failing tests), `-W error`.
 
 CI now exercises the same least-privilege posture we verify by hand on the VPS,
 which is the point of PHASE-2.9 §12.2.
+
+### B8-9 — GHA build cache needs the `docker-container` buildx driver; checkout bumped
+
+First real `deploy.yml` run: `Build and push image` failed to export the cache
+(`cache-to: type=gha` → `Cache export is not supported for the docker driver`).
+The runner's default Buildx driver is `docker`, which cannot export a build
+cache. Fix — `deploy.yml` only, no Python:
+
+1. Added a `docker/setup-buildx-action@v3` step before `build-push-action`. It
+   creates a `docker-container` builder, which **can** export/import
+   `type=gha`, so `cache-from`/`cache-to` now work and later builds are warm.
+2. Bumped `actions/checkout` `v4 → v5` in `deploy.yml`.
+
+`ci.yml` still pins `actions/checkout@v4` (it does not build images, so B8-9
+did not touch it — see B8-11 finding R3 for the version-skew note).
+
+### B8-10 — the wrapper must pass `--env-file` explicitly (compose looks in `deploy/`, not the repo root)
+
+Next `deploy.yml` run reached the VPS wrapper and failed in
+`compose ... run --rm migrate` with every `${...:?}` var unset. `docker compose
+-f deploy/compose.prod.yml` takes the **project directory from the compose
+file's location** (`deploy/`), so it auto-loaded `deploy/.env` (absent) and
+never saw `~/deploy/monthly-financial-ledger/.env` (present, the file the
+runbook Part 3.4 tells the operator to create). Fix — `deploy/mfl-deploy-run.sh`
+only:
+
+```sh
+DC=(docker compose --env-file "$REPO_DIR/.env" -f "$CF")
+```
+
+used for every `pull`/`run`/`up`/`exec`/`logs` invocation. `$REPO_DIR/.env` is
+matched by `.gitignore` (`.env`), confirmed with `git check-ignore`. No change
+to `compose.prod.yml` or the runbook's `.env` location.
+
+**After B8-9 + B8-10 the first automated deploy succeeded** (Erick, this
+session): CI green, `production` approval given, image built + pushed to GHCR,
+package made public (runbook Part 5), `deploy` re-run → wrapper ran
+pull → `migrate` (reached `0002 (head)`) → `up -d api` (force-removed the
+Block-6 interim `docker run` container) → health gate passed. `ledger-api` is
+now the compose-managed container on image `24fd66fde71c`, `healthy`, and the
+bot answers on Telegram.
+
+---
+
+## Block 8 — substitute review + close-out
+
+### B8-11 — substitute Codex review of the full Block 8 diff (`fcb72f0..HEAD`)
+
+Codex still unavailable (usage cap to month-end); substitute pass over the whole
+Block 8 surface: `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`,
+`deploy/compose.prod.yml`, `deploy/mfl-deploy-run.sh` (incl. B8-7…B8-10),
+`n8n/workflow-reporte-{semanal,mensual}.json`, `scripts/docker_smoke.sh`,
+`.dockerignore`, `docs/block-8-cicd-deploy.md`.
+
+**Suite:** `277 passed` (6 docker-marked deselected), run **twice** under
+`-W error` against an ephemeral least-privilege `pgserver` role (byte-identical
+to `scripts/local_db_setup.sql`); `pgserver` removed afterwards so `.venv` still
+matches `requirements-dev.txt`. Unchanged from B7-4 / B8-8 — no Block 8 commit
+touches Python (`tests/test_reports_service.py` in the range is the B7-4 test,
+already counted).
+
+**Corrección necesaria:** none. No finding breaks a documented happy path; the
+first automated deploy completed end to end.
+
+**Mejora recomendable:**
+
+- **R1 (alta) — `ci.yml` and `deploy.yml` both trigger on `push: [main]`, and
+  the reusable-workflow `ci` job shares `ci.yml`'s `concurrency` group
+  (`ci-${{ github.ref }}`, `cancel-in-progress: true`) with the standalone `CI`
+  run of the same push.** One run cancels the other, non-deterministically: if
+  the reusable call loses, `deploy` (`needs: ci`) is skipped and nothing
+  deploys; if the standalone loses, `main`'s own `CI / test` status shows
+  cancelled. It also runs the suite ~4× per merge. The re-run path (Part 5)
+  hides it because *Re-run failed jobs* only re-runs `Deploy`. **Fix:** drop
+  `push: branches: [main]` from `ci.yml` (keep `pull_request` +
+  `workflow_call`) — branch protection evaluates `CI / test` on the PR, and
+  `deploy.yml` still runs the suite via `uses:` before every deploy. (Alt:
+  namespace the group with `${{ github.workflow }}`.)
+- **R2 (media) — `workflow-reporte-mensual.json` has no graceful path on an API
+  error.** `GET /reports/monthly/image` uses `neverError: true` but not
+  `fullResponse`, so on a 4xx/5xx the ~100-byte error JSON is stored as binary
+  `data` and handed to `sendPhoto` (`binaryData: true`), which Telegram rejects
+  → the execution errors with no report that month. The weekly workflow degrades
+  cleanly (`{{ $json.text || 'No se pudo generar…' }}`). **Fix:** add
+  `fullResponse: true` + an IF on `statusCode`/content-type, or at least a
+  fallback text `sendMessage` on failure — parity with the weekly workflow.
+- **R3 (menor) — `actions/checkout` version skew:** `deploy.yml` on `v5`
+  (B8-9), `ci.yml` on `v4`. Both work; align to `v5` or add a one-line comment
+  that `ci.yml` stays on `v4` deliberately.
+- **R4 (menor) — no `timeout-minutes` on the CI / deploy jobs.** A hung job
+  burns the full 6 h default. Add `timeout-minutes` (e.g. 15 for `test`, 20 for
+  `deploy`). The SSH step's own `command_timeout: 15m` is already set.
+- **R5 (menor) — wrapper `git checkout -B main origin/main` doesn't discard a
+  dirty tracked file.** Nobody is meant to edit
+  `/home/mfl-deploy/deploy/monthly-financial-ledger`, but a stray local change
+  to a tracked file could make the checkout carry cruft or fail. `git reset
+  --hard origin/main` after the fetch is more robust for a machine-managed
+  checkout.
+- **R6 (menor) — `scripts/docker_smoke.sh` hard-codes `year=2026&month=8`.** As
+  months pass this is an empty-data month; the PNG is still valid so the smoke
+  check still passes, but testing the current or previous month would exercise a
+  populated render. Cosmetic.
+
+**Sin objeción (revisado, correcto):**
+
+- **A1 deploy design (B8-7):** forced `command=` + `restrict`, one root-owned
+  reviewed script, sudoers scoped to that single path, `mfl-deploy` not in
+  `docker`. `$SSH_ORIGINAL_COMMAND` parsed to exactly `deploy <40-hex>` with a
+  strict regex; anything else exits 2. `runuser` for the git ops so the checkout
+  keeps its owner. `set -euo pipefail`; a failed `migrate` aborts before
+  `up -d api`, so the old container stays up on a bad migration (additive-only
+  per decision C, backward-compatible with the still-running old API).
+- **`compose.prod.yml`:** `external: true` networks (system daemon only, B8-7);
+  `migrate` as the schema-owner role vs `api` as the least-privilege app role
+  (decision C / B6 ownership fix); every secret/name via `${VAR:?}` guards from
+  the VPS `./.env`; `restart: "no"` on the one-shot; `--env-file` now explicit
+  (B8-10). No DB/API secret in GitHub — only `DEPLOY_HOST/USER/SSH_KEY` in the
+  `production` env (PHASE-2.7 §28).
+- **`ci.yml` least-privilege posture (B8-8):** `POSTGRES_HOST_AUTH_METHOD=trust`
+  matching the local `pgserver` socket; `local_db_setup.sql` reused verbatim so
+  the suite connects as `money_ledger_app` and `test_role_privileges` is really
+  exercised; suite run twice under `-W error`; `permissions: contents: read`.
+- **Schedulers:** `Schedule Trigger` (no webhook conflict with workflow A);
+  cron `0 19 * * 0` / `0 7 1 * *` with `timezone: America/Lima` (decision D);
+  previous-month math correct (07:00 Lima = 12:00 UTC same day → `setUTCDate(0)`
+  → last month); one item per `TELEGRAM_AUTHORIZED_IDS` id, **fail closed** on an
+  empty/unset list; `appendAttribution: false`; `chatId` read back from the
+  `Prep` node, not the HTTP output (B6-6 lesson); `neverError: true` on the HTTP
+  nodes; credentials referenced by the existing names; `"active": false` in the
+  export (operator activates on import).
+- **`.dockerignore`:** adds `n8n`, `deploy`, `compose*.yml` — belt-and-suspenders
+  over the Dockerfile's already-narrow runtime COPY.
+- **`docker_smoke.sh`:** the new `GET /reports/monthly/image` assertion runs
+  in-container (no host `curl`, no `.env` parsing, token from the container env)
+  and checks the PNG magic bytes — exercises matplotlib inside the runtime image
+  (prerequisite C5-4).
+- **`appleboy/ssh-action@v1.2.0`** tag-pinned rather than SHA-pinned — already
+  listed as *optional* hardening in runbook Part 6.0b; not a regression.
+
+**Housekeeping (outside Block 8):** an untracked `..env.swp` (a Vim swap file
+for `.env`; the leading `..` dodges the `.env.*` ignore rule) was in the repo
+root. Removed; `.gitignore` now also ignores `*.swp` / `*.swo` / `*~`.
+
+### B8-12 — R1–R6 + housekeeping applied (Erick: "corrígelos todos", one commit)
+
+| # | Fix shipped |
+|---|---|
+| **R1** | `ci.yml` — dropped the `push: [main]` trigger (now `pull_request` + `workflow_call` only). Branch protection evaluates `CI / test` on the PR; `deploy.yml` re-runs the same job via `uses:` before every deploy. No more collision on the shared `ci-<ref>` concurrency group, and the suite no longer runs ~4× per merge. |
+| **R2** | `workflow-reporte-mensual.json` — `GET /reports/monthly/image` gains `fullResponse: true`; new `PNG OK?` IF node routes on `statusCode == 200` **or** `content-type` contains `image/png`. True → `TG: enviar imagen` (`sendPhoto`); false → new `TG: fallback` (`sendMessage` "No se pudo generar el reporte mensual.") — parity with the weekly workflow's inline fallback. Workflow goes 4 → 6 nodes. |
+| **R3** | `ci.yml` — `actions/checkout@v4 → @v5` (matches `deploy.yml`). |
+| **R4** | `ci.yml` `test` job `timeout-minutes: 15`; `deploy.yml` `deploy` job `timeout-minutes: 20`. (The `ci` job in `deploy.yml` is a `uses:` call — its timeout lives in `ci.yml`.) |
+| **R5** | `deploy/mfl-deploy-run.sh` — `git reset --hard --quiet origin/main` after the fetch/checkout, so a dirty tracked file in the VPS checkout can never alter the deployed `compose.prod.yml`. Untracked `./.env` is untouched. |
+| **R6** | `scripts/docker_smoke.sh` — the in-container monthly-image check now computes the month that just ended (`date.today().replace(day=1) - 1 day`) instead of the fixed `year=2026&month=8`. |
+| housekeeping | `..env.swp` deleted; `*.swp` / `*.swo` / `*~` added to `.gitignore`. |
+
+Scope: workflow YAML, the VPS wrapper shell script, one n8n JSON export,
+`docker_smoke.sh`, `.gitignore`, this file. **No Python touched.**
+
+**Suite:** `277 passed` twice under `-W error` (ephemeral least-privilege
+`pgserver` role per `local_db_setup.sql`; `pgserver` removed afterwards).
+Unchanged, as expected.
+
+**Manual-only checks still deferred, per Erick:** `scripts/docker_smoke.sh` on
+a Docker host (Part 7 / prereq C5-4) is blocked on Erick's local Docker daemon
+not answering its socket after a reboot — **not a code issue**; he resolves it
+separately and it does **not** block Block 8 close-out, since the real VPS
+deploy already ran end to end with a confirmed health check.
+
+### B8-13 — Block 8 CLOSED
+
+Implementation + substitute cross review (B8-11) + review fixes (B8-12) all
+done; suite `277 passed` twice under `-W error`. The first automated deploy
+succeeded end to end on the VPS (CI green → `production` approval → GHCR build
+→ wrapper pull/migrate/up → health gate passed; `ledger-api` compose-managed on
+`24fd66fde71c`, `healthy`; bot responding on Telegram).
+
+**Operator runbook items that remain (tracked in `docs/block-8-cicd-deploy.md`,
+not blockers for the block):**
+
+- Import + activate the two scheduler workflows in n8n (Part 9).
+- Branch protection on `main` (Part 4.3) — the workflow change in B8-12 makes
+  this safe to add now (the `CI / test` check runs on PRs).
+- Formal Part 8 confirmation of the interim container replacement
+  (`docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}'
+  ledger-api` → `money-ledger-prod`).
+- `scripts/docker_smoke.sh` on a Docker host once Erick's local daemon is back
+  (prereq C5-4; VPS deploy already validated the image path).
+- Block 6 deferred E2E (B6-9): Nora notification, `/corregir` before/after,
+  no-cross-correction (`403 CORRECTION_NOT_ALLOWED`), netting the `S/ 10.00`
+  test row.
+- Inherited `gonex-infra` debt from runbook Part 11 (Backblaze B2 encryption,
+  backup cron `PATH`, restore drill) — pre-existing, not a Block 8 deliverable.

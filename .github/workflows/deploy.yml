@@ -19,6 +19,7 @@ jobs:
   deploy:
     needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production      # <-- required-reviewer gate (approve every deploy)
     steps:
       - uses: actions/checkout@v5

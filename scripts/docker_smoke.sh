@@ -46,12 +46,16 @@ docker compose exec -T api alembic current
 
 # The monthly-report PNG path exercises matplotlib inside the runtime image
 # (Block 7 / B8). Runs in-container: no host curl, no .env parsing -- the token
-# is read from the container's own environment.
+# is read from the container's own environment. Reports on the month that just
+# ended (B8-11 R6) rather than a fixed date, so the query stays meaningful over
+# time; an empty month still renders a valid PNG, so the check holds either way.
 echo "==> GET /api/v1/reports/monthly/image (matplotlib render)"
 docker compose exec -T api python -c "
-import urllib.request, os, sys
+import urllib.request, os, sys, datetime
+first = datetime.date.today().replace(day=1)
+prev = first - datetime.timedelta(days=1)
 req = urllib.request.Request(
-    'http://127.0.0.1:8000/api/v1/reports/monthly/image?year=2026&month=8',
+    'http://127.0.0.1:8000/api/v1/reports/monthly/image?year=%d&month=%d' % (prev.year, prev.month),
     headers={'X-API-Key': os.environ['API_INTERNAL_TOKEN']},
 )
 body = urllib.request.urlopen(req, timeout=10).read()

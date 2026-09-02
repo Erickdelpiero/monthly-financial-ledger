@@ -1,7 +1,13 @@
 # PRODUCTION deploy for the ledger API (Block 8; PHASE-2.7 §3-9 / §23-28).
 #
-# Run by the dedicated deploy user on the VPS, driven by .github/workflows/deploy.yml.
-# It replaces the hand-rolled `docker run` from docs/block-6-n8n-telegram.md Step 3.
+# Run by the dedicated deploy user on the VPS, driven by .github/workflows/deploy.yml
+# through deploy/mfl-deploy-run.sh. It replaces the hand-rolled `docker run` from
+# docs/block-6-n8n-telegram.md Step 3.
+#
+# ASSUMES THE SYSTEM DOCKER DAEMON -- the one that runs gonex-postgres /
+# gonex-n8n. `ledger-net` and the DB network are declared `external` and only
+# resolve there. The deploy user's rootless daemon (if any) is a separate
+# network namespace and cannot see them (B8-7).
 #
 #   cd ~/deploy/monthly-financial-ledger
 #   IMAGE=ghcr.io/<owner>/<repo>:<sha> docker compose -f deploy/compose.prod.yml run --rm migrate

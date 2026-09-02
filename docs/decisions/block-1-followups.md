@@ -783,10 +783,12 @@ Push to `main` → `uses: ./.github/workflows/ci.yml` (must pass) → `deploy` j
 `environment: production` (required reviewer = manual approval on every deploy,
 decision B; also the human gate for a destructive migration, PHASE-2.7 §27).
 Build + push to **GHCR** (`ghcr.io/<owner-lowercased>/<repo>`, tags `:<sha>` and
-`:latest`, GHA build cache). Then `appleboy/ssh-action@v1.2.0` to the VPS:
-`git fetch` + `checkout -B main origin/main` (only `deploy/compose.prod.yml` is
-used), `docker pull`, `compose ... run --rm migrate`, `compose ... up -d api`,
-poll `/api/v1/health`. `concurrency: deploy-production` (no cancel).
+`:latest`, GHA build cache). Then `appleboy/ssh-action@v1.2.0` sends the single
+line `deploy <sha>` — there is **no inline shell logic** (see B8-7): the VPS
+key is forced to `deploy/mfl-deploy-run.sh`, which validates the sha, refreshes
+the compose file, `docker pull`s, `compose ... run --rm migrate`, force-removes
+the interim `ledger-api`, `compose ... up -d api`, polls `/api/v1/health`.
+`concurrency: deploy-production` (no cancel).
 
 ### B8-3 — `deploy/compose.prod.yml`
 
@@ -819,9 +821,46 @@ asserts PNG magic bytes -- exercises matplotlib inside the runtime image
 (token read from the container env, no `.env` parsing, no host `curl`).
 `.dockerignore` now also excludes `n8n`, `deploy`, `compose*.yml`.
 
+### B8-7 — rootless deploy daemon can't share the gonex networks → approach A1
+
+Erick flagged, before the first real push, that `mfl-deploy` was set up with a
+**rootless Docker daemon**, separate from the system daemon that runs
+`gonex-postgres` / `gonex-n8n` and owns `ledger-net` + `docker_gonex-network`.
+Different daemons do not share networks even by the same name. So a rootless
+`ledger-api`:
+
+- `compose.prod.yml` (networks `external: true`) would not even start — the
+  networks don't exist in the rootless daemon;
+- could not reach `gonex-postgres`, and `gonex-n8n` could not reach it at
+  `http://ledger-api:8000` — breaking both directions, i.e. workflows A/B and
+  the new schedulers.
+
+Rejected the "rootless + publish Postgres and the API on host ports + rewrite
+every n8n URL" workaround (more attack surface, contradicts PHASE-2.6 §14 /
+2.7 §6 / §10). **Chosen (Erick): A1 — deploy on the system daemon, isolate the
+*access* instead:**
+
+- `mfl-deploy` is **not** in the `docker` group and never touches the socket.
+- `~/.ssh/authorized_keys` forces
+  `command="sudo /usr/local/sbin/mfl-deploy-run.sh",restrict`.
+- `deploy/mfl-deploy-run.sh` (in the repo, copied to `/usr/local/sbin/`,
+  `root:root 0755`) is the only thing that key can run. It validates the
+  request is `deploy <40-hex-sha>` (via `$SSH_ORIGINAL_COMMAND`), then does the
+  pull / migrate / up / health. git ops run back as `mfl-deploy` (`runuser`).
+- `/etc/sudoers.d/mfl-deploy`: `NOPASSWD` for exactly that one script,
+  `env_keep += SSH_ORIGINAL_COMMAND`, `!requiretty`. No general sudo.
+- `deploy.yml`'s SSH step is now just `script: deploy ${{ github.sha }}` — no
+  inline git/pull/compose.
+
+The rootless daemon already installed for `mfl-deploy` is left in place,
+unused; no need to uninstall it. `docs/block-8-cicd-deploy.md` Part 3 has the
+exact commands, sudoers lines, and `authorized_keys` prefix; Part 6.0a records
+the rootless `docker ps` / `docker network ls` as the evidence for A1.
+
 ### B8-6 — cycle
 
 No Python logic changed; suite is `277 passed` twice under `-W error`
 (unchanged from B7-4). `scripts/docker_smoke.sh` and the pipeline need a real
 Docker host / GitHub — run by Erick during the runbook (prerequisite C5-4).
-Codex substitute review of the Block 8 diff is the outstanding review debt.
+Codex substitute review of the Block 8 diff (incl. B8-7) is the outstanding
+review debt.

@@ -864,3 +864,42 @@ No Python logic changed; suite is `277 passed` twice under `-W error`
 Docker host / GitHub — run by Erick during the runbook (prerequisite C5-4).
 Codex substitute review of the Block 8 diff (incl. B8-7) is the outstanding
 review debt.
+
+### B8-8 — CI ran the suite as the Postgres image superuser (2 real failures on the first full run)
+
+The first genuine CI run (42 s, not the earlier cancelled few-second ones)
+failed 2 tests, 275 passed:
+
+- `test_role_privileges.py::test_app_role_has_no_instance_privileges` — the
+  connected role `ml_ci` had `rolsuper/rolcreatedb/rolcreaterole/rolbypassrls
+  = t`. `ci.yml` pointed `TEST_DATABASE_URL` at the `postgres:16` service
+  container's `POSTGRES_USER`, which the official image always makes a full
+  superuser. The local `pgserver` flow (CLAUDE.md) creates a dedicated
+  least-privilege role via `scripts/local_db_setup.sql`; `ci.yml` never did.
+- `test_migrations.py::test_upgrade_tolerates_percent_in_the_db_url` — this
+  test connects with a deliberately-malformed `%` password and only checks that
+  Alembic's configparser does not choke (B6-4 regression). That needs auth to
+  not actually verify the password. `pgserver`'s local unix socket is `trust`;
+  CI's TCP `localhost` used password auth → `password authentication failed`.
+
+**Fix — `ci.yml` only, no Python touched:**
+1. Service container: `POSTGRES_HOST_AUTH_METHOD=trust` (drop `POSTGRES_USER` /
+   `POSTGRES_PASSWORD` / `POSTGRES_DB`) — the same auth model as the local
+   `pgserver` socket; fixes failure #2.
+2. New step before the tests: `psql -U postgres -f scripts/local_db_setup.sql`
+   (reused verbatim — creates `money_ledger_app`
+   NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOREPLICATION/NOBYPASSRLS +
+   `money_ledger_dev`/`money_ledger_test` owned by it).
+3. `TEST_DATABASE_URL` now points at `money_ledger_app@money_ledger_test`.
+   `money_ledger_app` owns that DB, so it runs its own migrations and DML
+   exactly as on the VPS and under `pgserver`; fixes failure #1.
+
+Failure #1 is **not** self-resolved by the `trust` change — that only fixes #2.
+#1 is purely about *which role* `current_user` is: once the suite connects as
+`money_ledger_app` (created with every `NO*` attribute), `pg_roles` reports all
+four flags `false`. No `ALTER ROLE` is needed — the role is created correct by
+`local_db_setup.sql`. Verified locally against a role provisioned byte-for-byte
+that way: `277 passed` (incl. both previously-failing tests), `-W error`.
+
+CI now exercises the same least-privilege posture we verify by hand on the VPS,
+which is the point of PHASE-2.9 §12.2.

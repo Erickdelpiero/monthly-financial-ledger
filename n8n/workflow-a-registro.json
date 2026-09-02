@@ -162,7 +162,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: $('Preguntar pendiente').first().json.chatId, text: $('Preguntar pendiente').first().json.replyText, reply_markup: $('Preguntar pendiente').first().json.n8nKeyboard }) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {
@@ -336,7 +343,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: $('Registro SM').first().json.chatId, text: $('Registro SM').first().json.replyText, reply_markup: $('Registro SM').first().json.n8nKeyboard }) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {
@@ -508,7 +522,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: $('Handle API').first().json.chatId, text: $('Handle API').first().json.replyText, reply_markup: { inline_keyboard: [ [ { text: 'REINTENTAR', callback_data: 'retry' }, { text: 'CANCELAR', callback_data: 'cancel' } ] ] } }) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {

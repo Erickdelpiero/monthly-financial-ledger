@@ -647,3 +647,102 @@ deploy, outside the normal "Codex reviews" loop. The Python suite is unchanged
 by them (the changes are n8n JSON exports + docs); no new pytest run was
 required. A Codex pass over `n8n/workflow-*.json` + this entry is the
 outstanding review debt if the pilot wants one before Block 7.
+
+### B6-10 — substitute Codex review of `n8n/workflow-*.json` (2 minor fixes)
+
+Codex was unavailable (usage cap to month-end); review done as a substitute
+pass. Two non-blocking findings, both fixed in the same commit:
+
+1. **Telegram HTTP sends had no error tolerance.** The 6 HTTP Request nodes
+   that call the Telegram API (`TG: con botones`, `TG: error`,
+   `TG: preguntar pendiente`; B `TG: botones B`, `TG: picker B`, `TG: err B`)
+   lacked `options.response.response = { neverError: true, fullResponse: true }`
+   — unlike the ledger-API calls. A Telegram 4xx/5xx would have failed the
+   whole execution. Added the option (no retry logic — all 6 are terminal
+   nodes, so this just lets the execution end cleanly instead of erroring).
+
+2. **`Construir picker` (B) empty-list case didn't actually DELETE.** It set
+   `redisAction: 'del'`, but `Redis: guardar picker` was hard-wired to SET, so
+   an empty picker wrote `"{}"` with a TTL instead of removing the key.
+   Harmless in practice (`state.step || 'IDLE'` covers it) but inconsistent.
+   Fixed to match the `Estado` / `Estado B` pattern: new **`Estado picker`**
+   switch on `redisAction` → `Redis: guardar picker` (set) or the new
+   **`Redis: borrar picker`** (del); both converge on `TG: picker B`.
+
+Workflow B goes from 23 to 25 nodes. `node --check` clean on all Code nodes;
+connections verified. No Python change.
+
+**Block 6 is now fully closed** — implementation + cross review (substitute).
+
+---
+
+## Block 7 — reports (implementation choices)
+
+`src/money_ledger/reports/` — a read-only projection layer over the ledger
+(PHASE-2.8, PHASE-2.5 §19-20). Every figure comes from the existing
+`get_balance` / ACTIVE-rows path; a report never runs its own calculation
+(PHASE-2.8 §3, §15).
+
+Scope confirmed with Erick before implementation (A-E):
+A weekly report is a **new endpoint** (Python renders the fixed text);
+B monthly "Saldo actual" is the **global** current balance, not month-scoped;
+C **matplotlib** for the PNG; D **v1 minimum** — table shows only the ACTIVE
+version, no correction markers; E n8n scheduler workflows are **not** in
+Block 7 (they go with Block 8).
+
+### B7-1 — three endpoints (PHASE-2.5 §5)
+
+- `GET /api/v1/reports/weekly` → `{"text": <fixed template>, "balance": {...}}`.
+  `X-API-Key`, no `telegram_user_id` (bilateral balance is shared, PHASE-2.8 §2,
+  matches `/balance`). Text is `📊 Saldo actual\n\n<debt line>` per PHASE-2.8 §4.
+- `GET /api/v1/reports/monthly?year=&month=` → JSON: `year`, `month`, `period`
+  ("Agosto 2026"), `balance` (global), `movements[]`
+  (`event_date`, `recorded_at`, `person`, `event_type`, `movement`, `amount`,
+  `description`). No `idempotency_key` / internal ids (PHASE-2.8 §5.3).
+- `GET /api/v1/reports/monthly/image?year=&month=` → `image/png` bytes.
+
+`year`/`month` are `Query(ge=2000, le=2100)` / `Query(ge=1, le=12)` → a bad or
+missing value is FastAPI's `VALIDATION_ERROR` 422, the same pattern as
+`limit` on `GET /transactions` (no bespoke `INVALID_REPORT_PERIOD` code — kept
+consistent with the codebase; `monthly_report()` also guards the range when
+called directly, per the N3 "services validate even off-HTTP" decision).
+
+### B7-2 — implementation notes
+
+- **Month filter is on `event_date`**, not the registration timestamp: the
+  monthly report audits a period of real events, so a movement registered late
+  still lands in the month it occurred (PHASE-2.8 §5).
+- **Movement labels** (`reports/labels.py`) reuse the exact strings from the
+  Telegram buttons (`n8n/workflow-a-registro.json` `LABELS`) so the report is
+  worded like the bot. `assert` covers every `EventType`.
+- **`_LIMA` timezone** for the "Hora" column: `recorded_at` (stored tz-aware)
+  is converted to `America/Lima` and shown `HH:MM`.
+- **matplotlib** added to `requirements.txt` (runtime — the PNG is a runtime
+  feature). Agg backend, no display server. It is imported **lazily inside the
+  image route handler** so the other seven endpoints and app startup don't pay
+  the import cost. Note: the Docker image grows (~matplotlib + numpy + pillow)
+  and builds a font cache on first PNG in production (one-off).
+- **PNG layout** is intentionally plain (header block + table that grows
+  downward; long descriptions clipped with `…`); PHASE-2.8 §16 leaves the
+  visual design to implementation.
+
+### B7-3 — tests
+
+- `tests/test_reports_service.py` — weekly text for all three directions;
+  monthly filtering by `event_date` month, chronological order, only-ACTIVE
+  (a corrected row shows the correction), row fields, global (not month-scoped)
+  balance, empty month, invalid period raises.
+- `tests/test_reports_render.py` — `render_monthly_png` emits real PNG bytes
+  for the empty and populated cases and tolerates a naive `recorded_at`
+  (no pixel comparison — visuals are implementation-defined).
+- `tests/test_api_reports.py` — all three endpoints: shapes, `X-API-Key` 401,
+  `year`/`month` 422 (missing / 0 / 13 / 99), empty month, `image/png`
+  content-type + PNG magic bytes.
+
+**Suite:** `276 passed` (6 docker-marked deselected), run twice under
+`-W error` against a real local PostgreSQL. `pgserver` was used for the
+ephemeral DB and removed afterwards; `matplotlib` stays (it is now a runtime
+dependency).
+
+**Cycle:** Codex still unavailable (usage cap). A substitute review of the
+Block 7 diff is the outstanding review debt, same as B6-10.

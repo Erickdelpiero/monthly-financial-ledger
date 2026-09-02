@@ -140,7 +140,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: $('Correccion SM').first().json.chatId, text: $('Correccion SM').first().json.replyText, reply_markup: $('Correccion SM').first().json.n8nKeyboard }) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {
@@ -197,11 +204,39 @@
       }
     },
     {
+      "id": "b24",
+      "name": "Estado picker",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [ 1660, 400 ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ ({ set: 0, del: 1 })[$json.redisAction] }}"
+      }
+    },
+    {
+      "id": "b25",
+      "name": "Redis: borrar picker",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [ 1860, 480 ],
+      "parameters": {
+        "operation": "delete",
+        "key": "=mlbot:conv:{{ $('Construir picker').item.json.chatId }}"
+      },
+      "credentials": {
+        "redis": {
+          "name": "Redis-CuentasDN"
+        }
+      }
+    },
+    {
       "id": "b12",
       "name": "Redis: guardar picker",
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
-      "position": [ 1760, 400 ],
+      "position": [ 1860, 320 ],
       "parameters": {
         "operation": "set",
         "key": "=mlbot:conv:{{ $('Construir picker').item.json.chatId }}",
@@ -228,7 +263,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify(Object.assign({ chat_id: $('Construir picker').first().json.chatId, text: $('Construir picker').first().json.replyText }, $('Construir picker').first().json.n8nKeyboard ? { reply_markup: $('Construir picker').first().json.n8nKeyboard } : {})) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {
@@ -400,7 +442,14 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: $('Handle corr').first().json.chatId, text: $('Handle corr').first().json.replyText, reply_markup: { inline_keyboard: [ [ { text: 'REINTENTAR', callback_data: 'retry' }, { text: 'CANCELAR', callback_data: 'cancel' } ] ] } }) }}",
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
       }
     },
     {
@@ -547,7 +596,7 @@
       "main": [
         [
           {
-            "node": "Redis: guardar picker",
+            "node": "Estado picker",
             "type": "main",
             "index": 0
           }
@@ -644,6 +693,35 @@
         [
           {
             "node": "TG: err B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Estado picker": {
+      "main": [
+        [
+          {
+            "node": "Redis: guardar picker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Redis: borrar picker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis: borrar picker": {
+      "main": [
+        [
+          {
+            "node": "TG: picker B",
             "type": "main",
             "index": 0
           }

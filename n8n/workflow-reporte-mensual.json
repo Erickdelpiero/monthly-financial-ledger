@@ -1,0 +1,65 @@
+{
+  "name": "Ledger - Reporte mensual",
+  "active": false,
+  "settings": { "executionOrder": "v1", "timezone": "America/Lima" },
+  "pinData": {},
+  "meta": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "m1",
+      "name": "Dia 1, 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": { "interval": [ { "field": "cronExpression", "expression": "0 7 1 * *" } ] }
+      }
+    },
+    {
+      "id": "m2",
+      "name": "Prep mensual",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "parameters": {
+        "jsCode": "// Report on the month that just ended. Lima is a fixed UTC-5, so on day 1 at\n// 07:00 Lima it is still day 1 in UTC -- stepping to day 0 lands in last month.\nconst now = new Date();\nconst d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));\nd.setUTCDate(0);\nconst year = d.getUTCFullYear();\nconst month = d.getUTCMonth() + 1;\n\n// One item per authorised chat (fail closed on an empty list).\nconst ids = String($env.TELEGRAM_AUTHORIZED_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nreturn ids.map(id => ({ json: { chatId: Number(id), year, month } }));"
+      }
+    },
+    {
+      "id": "m3",
+      "name": "GET /reports/monthly/image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "parameters": {
+        "url": "=http://ledger-api:8000/api/v1/reports/monthly/image?year={{ $json.year }}&month={{ $json.month }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "neverError": true, "responseFormat": "file", "outputPropertyName": "data" } } }
+      },
+      "credentials": { "httpHeaderAuth": { "name": "Header Auth account-CuentasDN" } }
+    },
+    {
+      "id": "m4",
+      "name": "TG: enviar imagen",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [660, 300],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "={{ $('Prep mensual').item.json.chatId }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": { "appendAttribution": false }
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    }
+  ],
+  "connections": {
+    "Dia 1, 07:00": { "main": [[{ "node": "Prep mensual", "type": "main", "index": 0 }]] },
+    "Prep mensual": { "main": [[{ "node": "GET /reports/monthly/image", "type": "main", "index": 0 }]] },
+    "GET /reports/monthly/image": { "main": [[{ "node": "TG: enviar imagen", "type": "main", "index": 0 }]] }
+  }
+}

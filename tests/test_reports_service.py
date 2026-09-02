@@ -129,6 +129,43 @@ def test_monthly_shows_only_the_active_version(db_session: Session, person: Pers
     assert report.rows[0].amount == Decimal("12.00")
 
 
+def test_correction_moves_a_row_to_its_new_month(
+    db_session: Session, person: Person
+) -> None:
+    original = record_transaction(
+        db_session,
+        created_by_id=person.id,
+        event_type=EventType.erick_gasta_para_mama,
+        amount=Decimal("25.00"),
+        description="mudanza",
+        event_date=date(2026, 8, 15),
+        idempotency_key=f"orig-{uuid.uuid4()}",
+        today=FAR_FUTURE,
+    )
+    db_session.flush()
+
+    assert [r.description for r in monthly_report(db_session, year=2026, month=8).rows] == ["mudanza"]
+    assert monthly_report(db_session, year=2026, month=9).rows == ()
+
+    apply_correction(
+        db_session,
+        target_id=original.id,
+        created_by_id=person.id,
+        idempotency_key=f"corr-{uuid.uuid4()}",
+        event_date=date(2026, 9, 15),
+        today=FAR_FUTURE,
+    )
+    db_session.flush()
+
+    # The ACTIVE row now carries the September date: it leaves August and
+    # appears in September (same ACTIVE + event_date filter, B7-4).
+    assert monthly_report(db_session, year=2026, month=8).rows == ()
+    sept = monthly_report(db_session, year=2026, month=9).rows
+    assert [(r.description, r.event_date, r.amount) for r in sept] == [
+        ("mudanza", date(2026, 9, 15), Decimal("25.00"))
+    ]
+
+
 def test_monthly_row_fields(db_session: Session) -> None:
     erick = _person(db_session, "Erick")
     _tx(

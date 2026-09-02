@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:        # so deploy.yml can gate on this exact job
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+      TEST_DATABASE_URL: postgresql+psycopg://ml_ci:ml_ci_pw@localhost:5432/money_ledger_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ml_ci
+          POSTGRES_PASSWORD: ml_ci_pw
+          POSTGRES_DB: money_ledger_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ml_ci -d money_ledger_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Light checks (compile + import graph)
+        run: |
+          python -m compileall -q src tests migrations
+          python -c "import money_ledger.api.routes"
+          python -c "import money_ledger.reports.render"   # matplotlib import path
+
+      - name: Tests (-W error, twice)
+        run: |
+          python -m pytest -q -W error -m "not docker"
+          python -m pytest -q -W error -m "not docker"

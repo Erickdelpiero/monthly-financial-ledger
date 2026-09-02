@@ -739,10 +739,89 @@ called directly, per the N3 "services validate even off-HTTP" decision).
   `year`/`month` 422 (missing / 0 / 13 / 99), empty month, `image/png`
   content-type + PNG magic bytes.
 
-**Suite:** `276 passed` (6 docker-marked deselected), run twice under
+### B7-4 — substitute review: a correction that changes `event_date` moves the row's month
+
+Codex unavailable (usage cap); substitute review of the Block 7 diff. One
+non-blocking gap: no explicit test that a correction changing `event_date` to a
+different month makes the row leave the original month's report and appear in
+the new one. Correct by construction (same ACTIVE + `event_date` filter, and a
+correction produces a new ACTIVE row with the new date) but now verified:
+`tests/test_reports_service.py::test_correction_moves_a_row_to_its_new_month`
+records an August row, corrects only its `event_date` to September, and asserts
+August is now empty and September holds the row with the new date and the
+unchanged amount/description.
+
+**Suite:** `277 passed` (6 docker-marked deselected), run twice under
 `-W error` against a real local PostgreSQL. `pgserver` was used for the
 ephemeral DB and removed afterwards; `matplotlib` stays (it is now a runtime
 dependency).
 
-**Cycle:** Codex still unavailable (usage cap). A substitute review of the
-Block 7 diff is the outstanding review debt, same as B6-10.
+Block 7 is closed — implementation + substitute cross review.
+
+---
+
+## Block 8 — CI/CD, production deploy, report schedulers (implementation choices)
+
+Repo side only; every VPS / GitHub-settings action is the manual runbook
+`docs/block-8-cicd-deploy.md` (pattern of `docs/block-6-n8n-telegram.md`).
+Decisions A-F confirmed with Erick before implementation (see that runbook
+Part 2). PHASE-2.7 §23-28, PHASE-2.11 §4.3.
+
+### B8-1 — `.github/workflows/ci.yml`
+
+PR + push to `main` + `workflow_call`. `postgres:16` service container,
+`TEST_DATABASE_URL` wired, `PYTHONPATH=src` (no `pip install -e .`, matching the
+repo's `requirements.txt`-only convention). Light checks = `compileall` +
+importing `money_ledger.api.routes` and `money_ledger.reports.render` (catches a
+broken import graph / a missing matplotlib). Then `pytest -q -W error -m "not
+docker"` **twice** (the CLAUDE.md "run the suite twice" rule, now enforced by
+CI). `permissions: contents: read`.
+
+### B8-2 — `.github/workflows/deploy.yml`
+
+Push to `main` → `uses: ./.github/workflows/ci.yml` (must pass) → `deploy` job
+`environment: production` (required reviewer = manual approval on every deploy,
+decision B; also the human gate for a destructive migration, PHASE-2.7 §27).
+Build + push to **GHCR** (`ghcr.io/<owner-lowercased>/<repo>`, tags `:<sha>` and
+`:latest`, GHA build cache). Then `appleboy/ssh-action@v1.2.0` to the VPS:
+`git fetch` + `checkout -B main origin/main` (only `deploy/compose.prod.yml` is
+used), `docker pull`, `compose ... run --rm migrate`, `compose ... up -d api`,
+poll `/api/v1/health`. `concurrency: deploy-production` (no cancel).
+
+### B8-3 — `deploy/compose.prod.yml`
+
+Replaces the hand-rolled `docker run` from Block 6 Step 3. `container_name:
+ledger-api` kept (n8n reaches `http://ledger-api:8000`). `api` on `ledger-net`
+(n8n) + `ledger-db-net` (reaches `gonex-postgres`), both `external: true`.
+One-shot `migrate` service runs `alembic upgrade head` as the **schema-owner
+role** (`MIGRATE_DB_*`), not `money_ledger_app` (decision C, the B6 ownership
+fix). All values come from a git-ignored `./.env` on the VPS -- **no DB / API
+secret is stored in GitHub** (PHASE-2.7 §28); GitHub only holds
+`DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY` in the `production` environment.
+
+### B8-4 — report scheduler workflows
+
+`n8n/workflow-reporte-semanal.json` (Schedule `0 19 * * 0`, tz America/Lima →
+GET `/api/v1/reports/weekly` → `sendMessage`) and
+`n8n/workflow-reporte-mensual.json` (Schedule `0 7 1 * *` → compute the
+previous month → GET `/api/v1/reports/monthly/image` → `sendPhoto`). One item
+per id in `$env.TELEGRAM_AUTHORIZED_IDS` (fail closed on empty). Reuse the
+`Header Auth account-CuentasDN` / `Telegram account-CuentasDN` credentials by
+name; native Telegram nodes with `appendAttribution: false`. `Schedule Trigger`
+(not `Telegram Trigger`) → no webhook conflict with workflow A. HTTP nodes use
+`neverError: true`; the recipient `chatId` is read back from the `Prep` node
+(`$('Prep …').item.json.chatId`), not from the HTTP node's output (B6-6 lesson).
+
+### B8-5 — `scripts/docker_smoke.sh` + `.dockerignore`
+
+Smoke script gains an in-container `GET /api/v1/reports/monthly/image` that
+asserts PNG magic bytes -- exercises matplotlib inside the runtime image
+(token read from the container env, no `.env` parsing, no host `curl`).
+`.dockerignore` now also excludes `n8n`, `deploy`, `compose*.yml`.
+
+### B8-6 — cycle
+
+No Python logic changed; suite is `277 passed` twice under `-W error`
+(unchanged from B7-4). `scripts/docker_smoke.sh` and the pipeline need a real
+Docker host / GitHub — run by Erick during the runbook (prerequisite C5-4).
+Codex substitute review of the Block 8 diff is the outstanding review debt.

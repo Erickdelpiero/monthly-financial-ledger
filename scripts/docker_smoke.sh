@@ -44,4 +44,18 @@ echo "api uid = ${uid}"
 echo "==> migration is at head"
 docker compose exec -T api alembic current
 
+# The monthly-report PNG path exercises matplotlib inside the runtime image
+# (Block 7 / B8). Runs in-container: no host curl, no .env parsing -- the token
+# is read from the container's own environment.
+echo "==> GET /api/v1/reports/monthly/image (matplotlib render)"
+docker compose exec -T api python -c "
+import urllib.request, os, sys
+req = urllib.request.Request(
+    'http://127.0.0.1:8000/api/v1/reports/monthly/image?year=2026&month=8',
+    headers={'X-API-Key': os.environ['API_INTERNAL_TOKEN']},
+)
+body = urllib.request.urlopen(req, timeout=10).read()
+sys.exit(0 if body[:8] == b'\x89PNG\r\n\x1a\n' else 1)
+" && echo "   monthly PNG OK" || { echo "FAIL: monthly image is not a valid PNG"; exit 1; }
+
 echo "OK"

@@ -15,10 +15,13 @@ tests
 architecture
 docs
 scripts
+n8n
+deploy
 *.md
 Dockerfile
 .dockerignore
 docker-compose*.yml
+compose*.yml
 requirements-dev.txt
 
 # never ship secrets or local data

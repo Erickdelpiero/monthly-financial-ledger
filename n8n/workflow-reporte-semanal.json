@@ -1,0 +1,64 @@
+{
+  "name": "Ledger - Reporte semanal",
+  "active": false,
+  "settings": { "executionOrder": "v1", "timezone": "America/Lima" },
+  "pinData": {},
+  "meta": {},
+  "tags": [],
+  "nodes": [
+    {
+      "id": "s1",
+      "name": "Domingo 19:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": { "interval": [ { "field": "cronExpression", "expression": "0 19 * * 0" } ] }
+      }
+    },
+    {
+      "id": "s2",
+      "name": "Prep semanal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "parameters": {
+        "jsCode": "// One item per authorised chat (from $env.TELEGRAM_AUTHORIZED_IDS, \"id1,id2\").\n// Empty / unset => no items => nothing is sent (fail closed).\nconst ids = String($env.TELEGRAM_AUTHORIZED_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nreturn ids.map(id => ({ json: { chatId: Number(id) } }));"
+      }
+    },
+    {
+      "id": "s3",
+      "name": "GET /reports/weekly",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "parameters": {
+        "url": "http://ledger-api:8000/api/v1/reports/weekly",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "credentials": { "httpHeaderAuth": { "name": "Header Auth account-CuentasDN" } }
+    },
+    {
+      "id": "s4",
+      "name": "TG: enviar texto",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [660, 300],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prep semanal').item.json.chatId }}",
+        "text": "={{ $json.text || 'No se pudo generar el reporte semanal.' }}",
+        "additionalFields": { "appendAttribution": false }
+      },
+      "credentials": { "telegramApi": { "name": "Telegram account-CuentasDN" } }
+    }
+  ],
+  "connections": {
+    "Domingo 19:00": { "main": [[{ "node": "Prep semanal", "type": "main", "index": 0 }]] },
+    "Prep semanal": { "main": [[{ "node": "GET /reports/weekly", "type": "main", "index": 0 }]] },
+    "GET /reports/weekly": { "main": [[{ "node": "TG: enviar texto", "type": "main", "index": 0 }]] }
+  }
+}

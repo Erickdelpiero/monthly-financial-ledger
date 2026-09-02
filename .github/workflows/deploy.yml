@@ -1,0 +1,75 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write        # push the image to GHCR
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production      # <-- required-reviewer gate (approve every deploy)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase image repo (GHCR requires it)
+        run: echo "IMAGE_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_REPO }}:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            cd ~/deploy/monthly-financial-ledger
+            git fetch --quiet origin main
+            git checkout --quiet -B main origin/main    # only compose.prod.yml is used from the tree
+            export IMAGE="ghcr.io/${{ env.IMAGE_REPO }}:${{ github.sha }}"
+            docker pull "$IMAGE"
+            # 1) migrations as a deliberate step, as the schema-owner role (values from ./.env)
+            docker compose -f deploy/compose.prod.yml run --rm migrate
+            # 2) recreate the API container
+            docker compose -f deploy/compose.prod.yml up -d api
+            # 3) health gate
+            ok=""
+            for _ in $(seq 1 30); do
+              if docker compose -f deploy/compose.prod.yml exec -T api \
+                   python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',timeout=3).status==200 else 1)"; then
+                ok=1; break
+              fi
+              sleep 2
+            done
+            [ -n "$ok" ] || { docker compose -f deploy/compose.prod.yml logs --tail 50 api; exit 1; }
+            echo "deployed $IMAGE"

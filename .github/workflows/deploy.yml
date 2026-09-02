@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production      # <-- required-reviewer gate (approve every deploy)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Lowercase image repo (GHCR requires it)
         run: echo "IMAGE_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -32,6 +32,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `docker-container` driver -- the default `docker` driver on the runner
+      # cannot export a build cache (`type=gha` below).
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
         uses: docker/build-push-action@v6

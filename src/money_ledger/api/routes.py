@@ -1,9 +1,13 @@
-"""The four v1 endpoints (PHASE-2.5 §5). Reports come in Block 7.
+"""The v1 endpoints (PHASE-2.5 §5).
 
     GET  /health
     POST /transactions
     POST /transactions/{id}/corrections
+    GET  /transactions
     GET  /balance
+    GET  /reports/weekly
+    GET  /reports/monthly
+    GET  /reports/monthly/image
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -22,12 +26,18 @@ from money_ledger.api.dependencies import ApiKeyGuard, get_llm, get_session
 from money_ledger.api.identity import resolve_person
 from money_ledger.api.idempotency import correction_replay, transaction_replay
 from money_ledger.api.schemas import CorrectionCreate, TransactionCreate
-from money_ledger.api.serialization import balance_payload, transaction_payload
+from money_ledger.api.serialization import (
+    balance_payload,
+    monthly_report_payload,
+    transaction_payload,
+    weekly_report_payload,
+)
 from money_ledger.domain.errors import InvalidAmount, InvalidEventDate, ValidationError
 from money_ledger.domain.events import parse_event_type
 from money_ledger.models.enums import TransactionStatus
 from money_ledger.parsing import resolve_amount_and_description
 from money_ledger.parsing.result import ParseResult, ParseSource
+from money_ledger.reports import monthly_report, weekly_report
 from money_ledger.services import (
     apply_correction,
     get_balance,
@@ -205,3 +215,38 @@ def list_transactions(
 @router.get("/balance", dependencies=[ApiKeyGuard])
 def read_balance(session: Session = Depends(get_session)) -> JSONResponse:
     return JSONResponse(status_code=200, content=balance_payload(get_balance(session)))
+
+
+@router.get("/reports/weekly", dependencies=[ApiKeyGuard])
+def read_weekly_report(session: Session = Depends(get_session)) -> JSONResponse:
+    """Text-only weekly report: current bilateral balance + who owes whom
+    (PHASE-2.8 §4). Python renders the fixed template; n8n only forwards it."""
+    return JSONResponse(
+        status_code=200, content=weekly_report_payload(weekly_report(session))
+    )
+
+
+@router.get("/reports/monthly", dependencies=[ApiKeyGuard])
+def read_monthly_report(
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    """Executive summary (current balance) + the ACTIVE movements whose
+    ``event_date`` falls in the given month (PHASE-2.5 §19, PHASE-2.8 §5)."""
+    report = monthly_report(session, year=year, month=month)
+    return JSONResponse(status_code=200, content=monthly_report_payload(report))
+
+
+@router.get("/reports/monthly/image", dependencies=[ApiKeyGuard])
+def read_monthly_report_image(
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    session: Session = Depends(get_session),
+) -> Response:
+    """The monthly report as a PNG (PHASE-2.5 §20, PHASE-2.8 §5-6). matplotlib
+    is imported lazily here so the other endpoints don't pay for it."""
+    from money_ledger.reports.render import render_monthly_png
+
+    report = monthly_report(session, year=year, month=month)
+    return Response(content=render_monthly_png(report), media_type="image/png")

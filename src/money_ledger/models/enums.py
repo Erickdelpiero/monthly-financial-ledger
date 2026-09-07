@@ -13,13 +13,16 @@ import enum
 class EventType(str, enum.Enum):
     """The five v1 event types. Concrete naming, confirmed for implementation.
 
-    The signed effect of each type on the balance S is defined in Block 2, not
-    here. For reference only (PHASE-2.5 §12):
+    The signed effect of each type on the balance S is defined in
+    ``money_ledger.domain.events`` (Block 2), not here. For reference only:
         mama_entrega_dinero   -> +amount
         erick_gasta_para_mama -> -amount
         erick_entrega_dinero  -> -amount
-        mama_devuelve         -> -amount
-        erick_devuelve        -> +amount
+        mama_devuelve         -> +amount   # money moves Mamá -> Erick, like mama_entrega
+        erick_devuelve        -> -amount   # money moves Erick -> Mamá, like erick_entrega
+
+    (This corrects the inverted ``*_devuelve`` sign in PHASE-2.5 §12 /
+    PHASE-2.3 §5 -- see ``domain/events`` and docs/decisions/block-1-followups.md.)
     """
 
     mama_entrega_dinero = "mama_entrega_dinero"

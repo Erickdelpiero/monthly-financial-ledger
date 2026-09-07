@@ -60,10 +60,20 @@ Esta convención debe ser idéntica en Python, SQL, reportes, Telegram, tests y 
 | `B_ENTREGA_DINERO` | Usuario B entrega dinero a Usuario A | `+monto` |
 | `A_GASTA_PARA_B` | Usuario A realiza un gasto para Usuario B | `-monto` |
 | `A_ENTREGA_DINERO` | Usuario A entrega dinero a Usuario B | `-monto` |
-| `B_DEVUELVE` | Usuario B devuelve dinero a Usuario A | `-monto` |
-| `A_DEVUELVE` | Usuario A devuelve dinero a Usuario B | `+monto` |
+| `B_DEVUELVE` | Usuario B devuelve dinero a Usuario A | `+monto` |
+| `A_DEVUELVE` | Usuario A devuelve dinero a Usuario B | `-monto` |
 
 La semántica y los signos no podrán cambiarse sin una decisión explícita.
+
+> **Erratum X1 (Bloque 6 E2E).** Las dos filas `*_DEVUELVE` tenían el signo
+> **invertido** (`B_DEVUELVE = -monto`, `A_DEVUELVE = +monto`). El signo de un
+> evento sobre un saldo neto único lo fija **la dirección en que se mueve el
+> efectivo**, y *devolver* dinero lo mueve en la misma dirección que *entregarlo*:
+> `B_DEVUELVE` acompaña a `B_ENTREGA_DINERO` (`+monto`) y `A_DEVUELVE` acompaña a
+> `A_ENTREGA_DINERO` (`-monto`). Con el signo antiguo, saldar una deuda exacta la
+> **duplicaba** en la dirección contraria. Corregido en `domain/events.py` y
+> `docs/decisions/block-1-followups.md` §X1. La tabla de arriba ya refleja el
+> signo correcto.
 
 ---
 

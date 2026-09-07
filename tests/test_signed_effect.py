@@ -19,12 +19,27 @@ AMOUNT = Decimal("100.00")
         (EventType.mama_entrega_dinero, Decimal("100.00")),
         (EventType.erick_gasta_para_mama, Decimal("-100.00")),
         (EventType.erick_entrega_dinero, Decimal("-100.00")),
-        (EventType.mama_devuelve, Decimal("-100.00")),
-        (EventType.erick_devuelve, Decimal("100.00")),
+        # `*_devuelve` moves cash the same direction as the matching `*_entrega`
+        # event, so it carries the same sign. PHASE-2.3 §5 / PHASE-2.5 §12 had
+        # these inverted; see domain/events docstring and block-1-followups.md.
+        (EventType.mama_devuelve, Decimal("100.00")),
+        (EventType.erick_devuelve, Decimal("-100.00")),
     ],
 )
 def test_signed_effect_matches_contract(event_type: EventType, expected: Decimal) -> None:
     assert signed_effect(event_type, AMOUNT) == expected
+
+
+def test_devuelve_matches_the_matching_entrega_sign() -> None:
+    # A repayment is a cash movement in the same direction as handing money over;
+    # only the ledger narrative differs. If this ever fails, someone re-inverted
+    # the `*_devuelve` sign -- do not "fix" it back (see block-1-followups.md).
+    assert signed_effect(EventType.mama_devuelve, AMOUNT) == signed_effect(
+        EventType.mama_entrega_dinero, AMOUNT
+    )
+    assert signed_effect(EventType.erick_devuelve, AMOUNT) == signed_effect(
+        EventType.erick_entrega_dinero, AMOUNT
+    )
 
 
 def test_sign_table_covers_every_event_type() -> None:

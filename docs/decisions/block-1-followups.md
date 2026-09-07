@@ -1095,3 +1095,110 @@ not blockers for the block):**
   test row.
 - Inherited `gonex-infra` debt from runbook Part 11 (Backblaze B2 encryption,
   backup cron `PATH`, restore drill) — pre-existing, not a Block 8 deliverable.
+
+---
+
+## X1 — Inverted sign for `mama_devuelve` / `erick_devuelve` (found in Block 6 E2E)
+
+**Status:** code + tests fixed locally; **architecture docs and `.ai/decisions.md`
+updated with an erratum**; pending Codex substitute review and Erick's ratification
+of the architecture change (AGENTS.md: sign changes need an explicit decision).
+
+### Symptom (real, on production, Block 6 E2E)
+
+```
+1. erick_gasta_para_mama  S/10.00   -> Mamá le debe a Erick: S/10.00   (S = -10)
+2. erick_gasta_para_mama  S/5.00    -> S/15.00                          (S = -15)
+3. corrección del paso 2 a S/7.00   -> S/17.00                          (S = -17)
+4. mama_devuelve          S/17.00   -> Mamá le debe a Erick: S/34.00    (S = -34)  ✗
+```
+
+Step 4 with the button **"Mamá me devolvió dinero"** — the semantically correct
+choice to settle exactly this debt — **doubled** the debt instead of clearing it
+(expected `S = 0` / `no_debt`). Reproduced 1:1 against `compute_balance`.
+
+### Diagnosis: design error in PHASE-2.3 §5/§9 and PHASE-2.5 §12, not an implementation bug
+
+`domain/events.py` faithfully implemented the closed contract table:
+
+| event_type | PHASE-2.3 §5 / PHASE-2.5 §12 (pre-fix) | financially correct |
+|---|---:|---:|
+| `mama_entrega_dinero`   | `+amount` | `+amount` |
+| `erick_gasta_para_mama` | `-amount` | `-amount` |
+| `erick_entrega_dinero`  | `-amount` | `-amount` |
+| `mama_devuelve`         | `-amount` | **`+amount`** |
+| `erick_devuelve`        | `+amount` | **`-amount`** |
+
+The contract treated `*_devuelve` as the **opposite** of the matching `*_entrega`
+event. But the sign of a single-net-balance event is fixed by **which way the
+cash moves**, and *returning* money moves it the same direction as *handing it
+over*:
+
+```
+Mamá -> Erick   (mama_entrega_dinero, mama_devuelve)   => S increases  (+)
+Erick -> Mamá   (erick_gasta_para_mama, erick_entrega_dinero,
+                 erick_devuelve)                        => S decreases  (-)
+```
+
+`*_devuelve` and `*_entrega` for the same person therefore carry the **same**
+sign; they are kept as separate `event_type`s only for the ledger narrative /
+reports, never for the arithmetic. The pre-fix signs made `mama_devuelve`
+identical to `erick_entrega_dinero` and `erick_devuelve` identical to
+`mama_entrega_dinero` — i.e. every repayment was booked as a brand-new debt in
+the wrong direction. There is no debt-polarity scenario in which the old signs
+settle a debt.
+
+`tests/test_signed_effect.py` was asserting the contract table verbatim, so it
+**green-lit the inverted sign** instead of catching it; `tests/test_balance.py`
+had **no** coverage of either `*_devuelve` type. Both gaps are now closed.
+
+### Fix (this change)
+
+- `src/money_ledger/domain/events.py` — `SIGN[mama_devuelve] = +1`,
+  `SIGN[erick_devuelve] = -1`; docstring rewritten around the cash-direction rule
+  with an explicit erratum pointer.
+- `src/money_ledger/models/enums.py` — reference docstring corrected.
+- `tests/test_signed_effect.py` — contract params corrected; new
+  `test_devuelve_matches_the_matching_entrega_sign` locks `*_devuelve` == `*_entrega`.
+- `tests/test_balance.py` — 5 new **outcome-based** regressions, incl. the exact
+  Block 6 E2E sequence resolving to `no_debt`, standalone-`devuelve` direction,
+  and a partial-repayment remainder.
+- `architecture/PHASE-2.3-…` §5/§9 and `architecture/PHASE-2.5-…` §12 — sign
+  table corrected in place with an **Erratum X1** note.
+- `.ai/decisions.md` — `event_type` sign list corrected + erratum line.
+
+No production, DB, or migration change. `event_type` values, enum, API contract
+shape, and n8n button mapping are all unchanged — only the derived sign moves.
+
+### Verification
+
+`pytest -q -W error`, two consecutive runs: **`283 passed`** both times
+(baseline was `277`; +6 = the new sign/balance regressions). `-m docker`
+(`test_docker_image`, `test_docker_compose`) still fails identically **with or
+without this change** — it needs a built project image (deferred docker-smoke,
+B8-12/B8-13), unrelated here.
+
+Ran against a throwaway `postgres:16` container on `127.0.0.1:55432`
+(`POSTGRES_HOST_AUTH_METHOD=trust`, least-privilege `money_ledger_app` role +
+`money_ledger_test` DB per `scripts/local_db_setup.sql`); container removed
+afterwards, `.venv` untouched. `pgserver` was not available in this environment.
+
+Reproduction before the fix (exact production numbers):
+
+```
+compute_balance([(erick_gasta_para_mama, 10.00),
+                 (erick_gasta_para_mama, 7.00),
+                 (mama_devuelve, 17.00)])
+  pre-fix : net = -34.00  (mama_owes_erick)   <- debt doubled
+  post-fix: net =   0.00  (no_debt)           <- debt settled
+```
+
+### Production data (the four E2E rows)
+
+The Block 6 E2E left four rows in production (`erick_gasta_para_mama` S/10, a
+S/5→S/7 correction, and `mama_devuelve` S/17). Under the new sign they net to
+`S/ 0.00` **with no data change**, so the plan is **deploy first, then optional
+description-only relabelling** — never correct-first (it re-creates the doubling
+mirrored, or falsifies `event_type`). Full one-off runbook (Erick, on the VPS):
+`docs/decisions/x1-test-rows-data-plan.md`. Not part of the repeatable deploy
+runbook.

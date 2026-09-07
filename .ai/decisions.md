@@ -11,9 +11,13 @@ are in `docs/decisions/block-1-followups.md`.
   the `null` in PHASE-2.9 §4.2 is superseded — see its erratum).
 - **Five closed `event_type` values**, concrete names:
   `mama_entrega_dinero` (+), `erick_gasta_para_mama` (−),
-  `erick_entrega_dinero` (−), `mama_devuelve` (−), `erick_devuelve` (+).
+  `erick_entrega_dinero` (−), `mama_devuelve` (+), `erick_devuelve` (−).
   The sign lives only in `domain/events.py`; it is never stored and never
-  chosen by the LLM or n8n.
+  chosen by the LLM or n8n. Sign = direction the cash moves: a repayment
+  (`*_devuelve`) carries the **same** sign as the matching `*_entrega` event.
+  *Erratum X1:* the two `*_devuelve` signs were inverted in PHASE-2.3 §5 /
+  PHASE-2.5 §12 (a repayment doubled the debt); corrected — see
+  `docs/decisions/block-1-followups.md` §X1.
 - **Append-only.** A correction = new row + old row `SUPERSEDED`
   (`superseded_by_id`), done atomically. Chains `A→B→C`; only the tail is
   `ACTIVE`; the balance sums `ACTIVE` rows only. You may only correct the

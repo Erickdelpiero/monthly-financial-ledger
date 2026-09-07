@@ -362,8 +362,8 @@ Reglas v1:
 | `mama_entrega_dinero` | `+amount` |
 | `erick_gasta_para_mama` | `-amount` |
 | `erick_entrega_dinero` | `-amount` |
-| `mama_devuelve` | `-amount` |
-| `erick_devuelve` | `+amount` |
+| `mama_devuelve` | `+amount` |
+| `erick_devuelve` | `-amount` |
 
 Donde:
 
@@ -372,6 +372,15 @@ S > 0 → Erick le debe a mamá
 S < 0 → mamá le debe a Erick
 S = 0 → no existe deuda neta
 ```
+
+> **Erratum X1 (Bloque 6 E2E).** `mama_devuelve` y `erick_devuelve` estaban
+> **invertidos** (`-amount` / `+amount`). El signo lo fija la dirección del
+> efectivo: *devolver* mueve el dinero igual que *entregar*, así que `mama_devuelve`
+> comparte signo con `mama_entrega_dinero` (`+amount`) y `erick_devuelve` con
+> `erick_entrega_dinero` (`-amount`). Con el signo antiguo, `mama_devuelve` por el
+> monto exacto de la deuda la **duplicaba** en vez de saldarla. Fuente de verdad:
+> `src/money_ledger/domain/events.py`; detalle en
+> `docs/decisions/block-1-followups.md` §X1. La tabla ya refleja el signo correcto.
 
 El backend calcula el saldo únicamente a partir de eventos `ACTIVE`.
 

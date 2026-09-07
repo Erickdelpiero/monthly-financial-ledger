@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
+import warnings
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +27,24 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from money_ledger.models import EventType, Person, Transaction
+
+# --- Third-party deprecation, quarantined at a single import site -------------
+# anyio >= 4.15 emits a DeprecationWarning the first time ``anyio.abc.BlockingPortal``
+# is read (the class moved to ``anyio.from_thread``). starlette 0.46.2's TestClient
+# still touches the old alias at *module import* time (starlette/testclient.py),
+# and starlette cannot advance while fastapi is pinned ``< 0.116``. Under
+# ``-W error`` that import turns fatal and every TestClient-based test fails in
+# setup. Import the module once here with *only that one message* silenced, so the
+# alias resolves and caches; the filter is scoped by ``catch_warnings`` and every
+# other warning (this one included, at any other call site) stays an error.
+# Remove once fastapi/starlette stop using the deprecated alias.
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The anyio\.abc\.BlockingPortal alias is deprecated",
+        category=DeprecationWarning,
+    )
+    import starlette.testclient  # noqa: F401  (imported for its import-time side effect)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,11 +214,24 @@ def api_client(database_url: str, engine: Engine):
 
 @pytest.fixture()
 def people(engine: Engine) -> dict[str, str]:
-    """Two registered people, committed. Returns {'erick': <tg id>, 'mama': <tg id>}."""
+    """Two registered people, committed. Returns {'erick': <tg id>, 'mama': <tg id>}.
+
+    Self-contained: it clears ``person`` / ``transaction`` before *and* after, so
+    it never depends on another fixture's cleanup having run. Previously the only
+    thing removing these committed rows was ``build_api_client``'s ``TRUNCATE`` on
+    exit; if that teardown was skipped for any reason (e.g. the client failed to
+    build), the next ``people`` collided on ``uq_person_telegram_user_id``.
+    """
     ids = {"erick": "tg-erick-001", "mama": "tg-mama-002"}
     factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE transaction, person CASCADE"))
     with factory() as session:
         session.add(make_person(name="Erick", telegram_user_id=ids["erick"]))
         session.add(make_person(name="Mamá", telegram_user_id=ids["mama"]))
         session.commit()
-    return ids
+    try:
+        yield ids
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE transaction, person CASCADE"))

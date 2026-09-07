@@ -1202,3 +1202,49 @@ description-only relabelling** — never correct-first (it re-creates the doubli
 mirrored, or falsifies `event_type`). Full one-off runbook (Erick, on the VPS):
 `docs/decisions/x1-test-rows-data-plan.md`. Not part of the repeatable deploy
 runbook.
+
+### CI follow-up on the X1 commit — two unrelated failures, both fixed in `tests/conftest.py`
+
+The first CI run of the sign fix (commit `0420755`) went red for two reasons,
+neither touching the sign logic. The deploy stays stopped until CI is green.
+
+**1 — `anyio.abc.BlockingPortal` DeprecationWarning → fatal under `-W error`
+(≈69 tests failed in setup).** `anyio >= 4.15` (CI's fresh install resolved
+`4.15.1`; the local `.venv` had `4.14.2`, hence green locally) emits a
+`DeprecationWarning` the first time `anyio.abc.BlockingPortal` is read — the
+class moved to `anyio.from_thread`. starlette 0.46.2's `TestClient` still reads
+the old alias at *module import* time, and starlette cannot advance while
+`fastapi` is pinned `< 0.116` (fastapi 0.115 requires `starlette < 0.47`).
+
+*Not a version pin.* `anyio` is transitive (`fastapi → starlette → anyio`);
+pinning `anyio < 4.15` in `requirements*.txt` freezes a dependency over a
+cosmetic upstream rename and would have to persist until fastapi/starlette move.
+*Not a broad `-W ignore::DeprecationWarning`* — that hides real deprecations.
+Fix: `tests/conftest.py` imports `starlette.testclient` once inside a
+`warnings.catch_warnings()` block that silences **only**
+`message=r"The anyio\.abc\.BlockingPortal alias is deprecated"` +
+`category=DeprecationWarning`. The alias resolves and caches; every other
+warning (and this message at any other site) stays an error. Verified: an
+unrelated `DeprecationWarning` is still fatal; survives `-W error` on the CLI.
+Remove the shim when fastapi/starlette stop using the alias.
+
+**2 — `UniqueViolation` on `uq_person_telegram_user_id` (`tg-erick-001`) in the
+`people` fixture.** Not CI bad luck, and not introduced by the X1 tests
+(`test_balance.py` additions are pure, no DB). Root cause: the `people` fixture
+commits two rows with **fixed** telegram ids and **had no teardown of its own** —
+cleanup depended entirely on `build_api_client`'s `TRUNCATE` on exit. The two
+`test_*_never_reaches_the_llm` tests take `people` *without* the `api_client`
+fixture and build their client inside the test via `build_api_client(...)`; when
+that context manager raised on the `TestClient` import (failure 1) *before* its
+`try`, the `finally` `TRUNCATE` was skipped and the `tg-erick-001` / `tg-mama-002`
+rows leaked. The next `people` setup then collided. Dormant with `anyio < 4.15`;
+failure 1 is what unmasked it. Fix: `people` is now a `yield` fixture that
+`TRUNCATE`s `transaction, person` **before and after** — fully self-contained,
+independent of any other fixture's cleanup. Verified with a probe that
+pre-leaks the fixed ids: the next `people` recovers.
+
+**Verification:** `pytest -q -W error -m "not docker"`, two runs, **`283
+passed`** both times, against `.venv` bumped to `anyio 4.15.1` (the version a
+fresh CI install resolves) + a throwaway `postgres:16` container. `-m docker`
+still fails identically (pre-existing, unrelated). Only `tests/conftest.py`
+changed.
